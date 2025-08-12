@@ -1,0 +1,329 @@
+// ========================================
+// 1. User Control クラス (PersonInfoControl.cs)
+// ========================================
+using System;
+using System.Windows.Forms;
+
+public partial class PersonInfoControl : UserControl
+{
+    // プロパティでデータのやり取りをする
+    public string PersonName
+    {
+        get { return txtName.Text; }
+        set { txtName.Text = value; }
+    }
+
+    public int PersonAge
+    {
+        get 
+        { 
+            int age;
+            return int.TryParse(txtAge.Text, out age) ? age : 0;
+        }
+        set { txtAge.Text = value.ToString(); }
+    }
+
+    // カスタムイベントを定義
+    public event EventHandler PersonUpdated;
+
+    public PersonInfoControl()
+    {
+        InitializeComponent();
+        
+        // ボタンのクリックイベントを設定
+        btnUpdate.Click += BtnUpdate_Click;
+        
+        // 初期値設定
+        PersonName = "";
+        PersonAge = 0;
+    }
+
+    private void BtnUpdate_Click(object sender, EventArgs e)
+    {
+        // 入力チェック
+        if (string.IsNullOrWhiteSpace(PersonName))
+        {
+            MessageBox.Show("名前を入力してください！", "エラー", 
+                          MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        if (PersonAge < 0 || PersonAge > 150)
+        {
+            MessageBox.Show("正しい年齢を入力してください（0-150）", "エラー", 
+                          MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        // ラベルを更新
+        lblInfo.Text = $"更新済み: {PersonName} ({PersonAge}歳)";
+        
+        // カスタムイベントを発火
+        PersonUpdated?.Invoke(this, EventArgs.Empty);
+    }
+
+    // パブリックメソッドで外部からコントロール可能
+    public void ClearInfo()
+    {
+        PersonName = "";
+        PersonAge = 0;
+        lblInfo.Text = "未設定";
+    }
+
+    public bool IsValidInfo()
+    {
+        return !string.IsNullOrWhiteSpace(PersonName) && PersonAge > 0 && PersonAge <= 150;
+    }
+}
+
+// ========================================
+// 2. User Control デザイナー部分 (PersonInfoControl.Designer.cs)
+// ========================================
+partial class PersonInfoControl
+{
+    private System.ComponentModel.IContainer components = null;
+    private Label lblName;
+    private Label lblAge;
+    private TextBox txtName;
+    private TextBox txtAge;
+    private Button btnUpdate;
+    private Label lblInfo;
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing && (components != null))
+        {
+            components.Dispose();
+        }
+        base.Dispose(disposing);
+    }
+
+    private void InitializeComponent()
+    {
+        this.lblName = new Label();
+        this.lblAge = new Label();
+        this.txtName = new TextBox();
+        this.txtAge = new TextBox();
+        this.btnUpdate = new Button();
+        this.lblInfo = new Label();
+        this.SuspendLayout();
+        
+        // lblName
+        this.lblName.AutoSize = true;
+        this.lblName.Location = new System.Drawing.Point(10, 15);
+        this.lblName.Name = "lblName";
+        this.lblName.Size = new System.Drawing.Size(29, 12);
+        this.lblName.TabIndex = 0;
+        this.lblName.Text = "名前:";
+        
+        // txtName
+        this.txtName.Location = new System.Drawing.Point(50, 12);
+        this.txtName.Name = "txtName";
+        this.txtName.Size = new System.Drawing.Size(150, 19);
+        this.txtName.TabIndex = 1;
+        
+        // lblAge
+        this.lblAge.AutoSize = true;
+        this.lblAge.Location = new System.Drawing.Point(10, 45);
+        this.lblAge.Name = "lblAge";
+        this.lblAge.Size = new System.Drawing.Size(29, 12);
+        this.lblAge.TabIndex = 2;
+        this.lblAge.Text = "年齢:";
+        
+        // txtAge
+        this.txtAge.Location = new System.Drawing.Point(50, 42);
+        this.txtAge.Name = "txtAge";
+        this.txtAge.Size = new System.Drawing.Size(60, 19);
+        this.txtAge.TabIndex = 3;
+        
+        // btnUpdate
+        this.btnUpdate.Location = new System.Drawing.Point(125, 40);
+        this.btnUpdate.Name = "btnUpdate";
+        this.btnUpdate.Size = new System.Drawing.Size(75, 23);
+        this.btnUpdate.TabIndex = 4;
+        this.btnUpdate.Text = "更新";
+        this.btnUpdate.UseVisualStyleBackColor = true;
+        
+        // lblInfo
+        this.lblInfo.AutoSize = true;
+        this.lblInfo.ForeColor = System.Drawing.Color.Blue;
+        this.lblInfo.Location = new System.Drawing.Point(10, 75);
+        this.lblInfo.Name = "lblInfo";
+        this.lblInfo.Size = new System.Drawing.Size(41, 12);
+        this.lblInfo.TabIndex = 5;
+        this.lblInfo.Text = "未設定";
+        
+        // PersonInfoControl
+        this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 12F);
+        this.AutoScaleMode = AutoScaleMode.Font;
+        this.BackColor = System.Drawing.SystemColors.Control;
+        this.BorderStyle = BorderStyle.FixedSingle;
+        this.Controls.Add(this.lblInfo);
+        this.Controls.Add(this.btnUpdate);
+        this.Controls.Add(this.txtAge);
+        this.Controls.Add(this.lblAge);
+        this.Controls.Add(this.txtName);
+        this.Controls.Add(this.lblName);
+        this.Name = "PersonInfoControl";
+        this.Size = new System.Drawing.Size(220, 100);
+        this.ResumeLayout(false);
+        this.PerformLayout();
+    }
+}
+
+// ========================================
+// 3. メインフォーム (MainForm.cs)
+// ========================================
+using System;
+using System.Windows.Forms;
+
+public partial class MainForm : Form
+{
+    private PersonInfoControl personControl1;
+    private PersonInfoControl personControl2;
+    private Button btnGetAllInfo;
+    private Button btnClearAll;
+    private ListBox listResults;
+
+    public MainForm()
+    {
+        InitializeComponent();
+        
+        // User Controlのイベントを購読
+        personControl1.PersonUpdated += PersonControl_Updated;
+        personControl2.PersonUpdated += PersonControl_Updated;
+        
+        // ボタンイベント設定
+        btnGetAllInfo.Click += BtnGetAllInfo_Click;
+        btnClearAll.Click += BtnClearAll_Click;
+    }
+
+    private void PersonControl_Updated(object sender, EventArgs e)
+    {
+        // どのコントロールが更新されたかを判定
+        PersonInfoControl control = sender as PersonInfoControl;
+        if (control != null)
+        {
+            string controlName = (control == personControl1) ? "Person1" : "Person2";
+            listResults.Items.Add($"{DateTime.Now:HH:mm:ss} - {controlName}が更新されました");
+            
+            // 最新のアイテムまでスクロール
+            listResults.TopIndex = listResults.Items.Count - 1;
+        }
+    }
+
+    private void BtnGetAllInfo_Click(object sender, EventArgs e)
+    {
+        string info = "=== 現在の情報 ===\n";
+        
+        if (personControl1.IsValidInfo())
+        {
+            info += $"Person1: {personControl1.PersonName} ({personControl1.PersonAge}歳)\n";
+        }
+        else
+        {
+            info += "Person1: 無効なデータ\n";
+        }
+        
+        if (personControl2.IsValidInfo())
+        {
+            info += $"Person2: {personControl2.PersonName} ({personControl2.PersonAge}歳)\n";
+        }
+        else
+        {
+            info += "Person2: 無効なデータ\n";
+        }
+        
+        MessageBox.Show(info, "情報取得", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+
+    private void BtnClearAll_Click(object sender, EventArgs e)
+    {
+        // 両方のUser Controlをクリア
+        personControl1.ClearInfo();
+        personControl2.ClearInfo();
+        
+        listResults.Items.Clear();
+        listResults.Items.Add($"{DateTime.Now:HH:mm:ss} - すべてクリアしました");
+    }
+
+    private void InitializeComponent()
+    {
+        this.personControl1 = new PersonInfoControl();
+        this.personControl2 = new PersonInfoControl();
+        this.btnGetAllInfo = new Button();
+        this.btnClearAll = new Button();
+        this.listResults = new ListBox();
+        this.SuspendLayout();
+        
+        // personControl1
+        this.personControl1.Location = new System.Drawing.Point(20, 20);
+        this.personControl1.Name = "personControl1";
+        this.personControl1.PersonAge = 0;
+        this.personControl1.PersonName = "";
+        this.personControl1.Size = new System.Drawing.Size(220, 100);
+        this.personControl1.TabIndex = 0;
+        
+        // personControl2
+        this.personControl2.Location = new System.Drawing.Point(260, 20);
+        this.personControl2.Name = "personControl2";
+        this.personControl2.PersonAge = 0;
+        this.personControl2.PersonName = "";
+        this.personControl2.Size = new System.Drawing.Size(220, 100);
+        this.personControl2.TabIndex = 1;
+        
+        // btnGetAllInfo
+        this.btnGetAllInfo.Location = new System.Drawing.Point(20, 140);
+        this.btnGetAllInfo.Name = "btnGetAllInfo";
+        this.btnGetAllInfo.Size = new System.Drawing.Size(100, 30);
+        this.btnGetAllInfo.TabIndex = 2;
+        this.btnGetAllInfo.Text = "情報取得";
+        this.btnGetAllInfo.UseVisualStyleBackColor = true;
+        
+        // btnClearAll
+        this.btnClearAll.Location = new System.Drawing.Point(140, 140);
+        this.btnClearAll.Name = "btnClearAll";
+        this.btnClearAll.Size = new System.Drawing.Size(100, 30);
+        this.btnClearAll.TabIndex = 3;
+        this.btnClearAll.Text = "全クリア";
+        this.btnClearAll.UseVisualStyleBackColor = true;
+        
+        // listResults
+        this.listResults.FormattingEnabled = true;
+        this.listResults.ItemHeight = 12;
+        this.listResults.Location = new System.Drawing.Point(20, 180);
+        this.listResults.Name = "listResults";
+        this.listResults.Size = new System.Drawing.Size(460, 100);
+        this.listResults.TabIndex = 4;
+        
+        // MainForm
+        this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 12F);
+        this.AutoScaleMode = AutoScaleMode.Font;
+        this.ClientSize = new System.Drawing.Size(500, 300);
+        this.Controls.Add(this.listResults);
+        this.Controls.Add(this.btnClearAll);
+        this.Controls.Add(this.btnGetAllInfo);
+        this.Controls.Add(this.personControl2);
+        this.Controls.Add(this.personControl1);
+        this.Name = "MainForm";
+        this.Text = "User Control サンプル";
+        this.ResumeLayout(false);
+    }
+}
+
+// ========================================
+// 4. Program.cs (アプリケーションエントリーポイント)
+// ========================================
+using System;
+using System.Windows.Forms;
+
+static class Program
+{
+    [STAThread]
+    static void Main()
+    {
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+        Application.Run(new MainForm());
+    }
+}

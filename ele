@@ -1,0 +1,762 @@
+おっけー！Electron版も作ったよ〜✨
+
+会社のPCだと使えないかもだけど、将来的に使えるようになったときのために置いとくね！
+
+## ディレクトリ構成
+
+```
+json-viewer/
+├── package.json
+├── main.js          # Electronメインプロセス
+├── preload.js       # プリロードスクリプト
+└── index.html       # レンダラープロセス（UI）
+```
+
+## 1. package.json
+
+```json
+{
+  "name": "json-viewer",
+  "version": "1.0.0",
+  "description": "JSON Viewer with Electron",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
+    "build:linux": "electron-builder --linux"
+  },
+  "keywords": ["json", "viewer", "electron"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1"
+  },
+  "build": {
+    "appId": "com.example.jsonviewer",
+    "productName": "JSON Viewer",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "index.html"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "mac": {
+      "target": "dmg"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
+  }
+}
+```
+
+## 2. main.js
+
+```javascript
+const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const path = require('path');
+const fs = require('fs').promises;
+
+let mainWindow;
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+
+  mainWindow.loadFile('index.html');
+  
+  // 開発時はDevToolsを開く
+  // mainWindow.webContents.openDevTools();
+}
+
+app.whenReady().then(createWindow);
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+app.on('activate', () => {
+  if (BrowserWindow.getAllWindows().length === 0) {
+    createWindow();
+  }
+});
+
+// ディレクトリ選択ダイアログ
+ipcMain.handle('select-directory', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openDirectory']
+  });
+  
+  if (result.canceled) {
+    return null;
+  }
+  
+  return result.filePaths[0];
+});
+
+// ファイル選択ダイアログ（複数選択）
+ipcMain.handle('select-files', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile', 'multiSelections'],
+    filters: [
+      { name: 'JSON Files', extensions: ['json'] }
+    ]
+  });
+  
+  if (result.canceled) {
+    return [];
+  }
+  
+  return result.filePaths;
+});
+
+// ディレクトリ内のJSONファイル一覧取得
+ipcMain.handle('load-json-directory', async (event, dirPath) => {
+  try {
+    const files = await fs.readdir(dirPath);
+    const jsonFiles = files.filter(f => f.endsWith('.json'));
+    
+    const fileData = [];
+    
+    for (const file of jsonFiles) {
+      try {
+        const filePath = path.join(dirPath, file);
+        const content = await fs.readFile(filePath, 'utf8');
+        const data = JSON.parse(content);
+        
+        fileData.push({
+          name: file,
+          path: filePath,
+          data: data
+        });
+      } catch (err) {
+        console.error(`Error loading ${file}:`, err);
+      }
+    }
+    
+    return fileData;
+  } catch (err) {
+    console.error('Error reading directory:', err);
+    return [];
+  }
+});
+
+// 個別ファイル読み込み
+ipcMain.handle('load-json-files', async (event, filePaths) => {
+  const fileData = [];
+  
+  for (const filePath of filePaths) {
+    try {
+      const content = await fs.readFile(filePath, 'utf8');
+      const data = JSON.parse(content);
+      
+      fileData.push({
+        name: path.basename(filePath),
+        path: filePath,
+        data: data
+      });
+    } catch (err) {
+      console.error(`Error loading ${filePath}:`, err);
+    }
+  }
+  
+  return fileData;
+});
+
+// 結果をCSVエクスポート
+ipcMain.handle('export-csv', async (event, results, paths) => {
+  const result = await dialog.showSaveDialog(mainWindow, {
+    filters: [
+      { name: 'CSV Files', extensions: ['csv'] }
+    ],
+    defaultPath: 'search_results.csv'
+  });
+  
+  if (result.canceled) {
+    return false;
+  }
+  
+  try {
+    // CSVヘッダー
+    const headers = ['ファイル名', ...paths].join(',');
+    
+    // CSVボディ
+    const rows = results.map(r => {
+      const values = [r.file];
+      paths.forEach(path => {
+        const value = r.fields[path] || '';
+        const strValue = typeof value === 'object' ? JSON.stringify(value) : String(value);
+        // CSVエスケープ（カンマとダブルクォートを含む場合）
+        values.push(`"${strValue.replace(/"/g, '""')}"`);
+      });
+      return values.join(',');
+    });
+    
+    const csv = [headers, ...rows].join('\n');
+    
+    await fs.writeFile(result.filePath, csv, 'utf8');
+    return true;
+  } catch (err) {
+    console.error('Error exporting CSV:', err);
+    return false;
+  }
+});
+```
+
+## 3. preload.js
+
+```javascript
+const { contextBridge, ipcRenderer } = require('electron');
+
+contextBridge.exposeInMainWorld('electronAPI', {
+  selectDirectory: () => ipcRenderer.invoke('select-directory'),
+  selectFiles: () => ipcRenderer.invoke('select-files'),
+  loadJsonDirectory: (dirPath) => ipcRenderer.invoke('load-json-directory', dirPath),
+  loadJsonFiles: (filePaths) => ipcRenderer.invoke('load-json-files', filePaths),
+  exportCsv: (results, paths) => ipcRenderer.invoke('export-csv', results, paths)
+});
+```
+
+## 4. index.html
+
+```html
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JSON Viewer - Electron</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { 
+      font-family: 'Segoe UI', sans-serif; 
+      height: 100vh; 
+      display: flex; 
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .container { 
+      display: flex; 
+      height: calc(100vh - 60px); 
+    }
+    .header {
+      padding: 15px;
+      background: #2c3e50;
+      color: white;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .header button {
+      padding: 8px 15px;
+      background: #3498db;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .header button:hover { background: #2980b9; }
+    .file-list {
+      width: 300px;
+      border-right: 2px solid #ddd;
+      overflow-y: auto;
+      background: #f8f9fa;
+      display: flex;
+      flex-direction: column;
+    }
+    .file-list-header {
+      padding: 10px 15px;
+      background: #e9ecef;
+      border-bottom: 2px solid #ddd;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: bold;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    .file-item {
+      padding: 10px 15px;
+      cursor: pointer;
+      border-bottom: 1px solid #dee2e6;
+      transition: background 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .file-item:hover { background: #e9ecef; }
+    .file-item.active { background: #007bff; color: white; }
+    .file-item input[type="checkbox"] {
+      cursor: pointer;
+      width: 16px;
+      height: 16px;
+    }
+    .file-item label {
+      cursor: pointer;
+      flex: 1;
+      user-select: none;
+      font-size: 13px;
+    }
+    .right-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 20px;
+    }
+    .search-box {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    input[type="text"] {
+      flex: 1;
+      min-width: 200px;
+      padding: 10px;
+      border: 2px solid #ddd;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+    button {
+      padding: 10px 20px;
+      background: #007bff;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    button:hover { background: #0056b3; }
+    button.debug { background: #28a745; }
+    button.debug:hover { background: #218838; }
+    button.warning { background: #ffc107; color: #000; }
+    button.warning:hover { background: #e0a800; }
+    button.export { background: #17a2b8; }
+    button.export:hover { background: #138496; }
+    .results {
+      flex: 1;
+      overflow-y: auto;
+      border: 2px solid #ddd;
+      border-radius: 4px;
+      padding: 15px;
+      background: white;
+    }
+    .result-item {
+      padding: 12px;
+      margin-bottom: 10px;
+      background: #f8f9fa;
+      border-left: 4px solid #007bff;
+      border-radius: 4px;
+    }
+    .result-file {
+      font-weight: bold;
+      color: #495057;
+      margin-bottom: 8px;
+      font-size: 15px;
+    }
+    .result-fields {
+      margin-top: 5px;
+    }
+    .result-field {
+      padding: 6px 0;
+      border-bottom: 1px solid #e9ecef;
+    }
+    .result-field:last-child {
+      border-bottom: none;
+    }
+    .result-field-name {
+      font-weight: bold;
+      color: #6c757d;
+      font-size: 12px;
+      margin-bottom: 3px;
+    }
+    .result-value {
+      color: #212529;
+      word-break: break-all;
+      white-space: pre-wrap;
+      font-family: monospace;
+      font-size: 13px;
+      padding-left: 10px;
+    }
+    .info {
+      padding: 10px;
+      background: #d1ecf1;
+      border-left: 4px solid #0c5460;
+      margin-bottom: 10px;
+      border-radius: 4px;
+    }
+    .error {
+      padding: 10px;
+      background: #f8d7da;
+      border-left: 4px solid #721c24;
+      margin-bottom: 10px;
+      border-radius: 4px;
+    }
+    .success {
+      padding: 10px;
+      background: #d4edda;
+      border-left: 4px solid #28a745;
+      margin-bottom: 10px;
+      border-radius: 4px;
+    }
+    .debug-info {
+      padding: 10px;
+      background: #d4edda;
+      border-left: 4px solid #28a745;
+      margin-bottom: 10px;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <button onclick="loadFromDirectory()">📁 ディレクトリから読み込み</button>
+    <button onclick="loadFromFiles()">📄 ファイルを選択</button>
+    <span id="fileCount">0 files loaded</span>
+    <span id="checkedCount">0 checked</span>
+  </div>
+
+  <div class="container">
+    <div class="file-list">
+      <div class="file-list-header">
+        <input type="checkbox" id="checkAll" onchange="toggleAllChecks()">
+        <label for="checkAll">全選択/解除</label>
+      </div>
+      <div id="fileList"></div>
+    </div>
+    
+    <div class="right-panel">
+      <div class="search-box">
+        <input type="text" id="searchPath" placeholder="例: fields.summary,key (カンマ区切りで複数指定可)" />
+        <button onclick="searchAll()">全検索</button>
+        <button onclick="searchChecked()" class="warning">チェック済のみ検索</button>
+        <button onclick="searchCurrent()">現在のファイル</button>
+        <button onclick="showStructure()" class="debug">構造確認</button>
+        <button onclick="exportResults()" class="export">CSV出力</button>
+      </div>
+      
+      <div class="results" id="results">
+        <div class="info">
+          📁 上部のボタンでJSONファイルを読み込んでください<br>
+          ☑️ チェックボックスで検索対象を絞り込めます<br>
+          🔍 検索パスの例: "fields.summary,key" (カンマ区切りで複数指定可)<br>
+          🐛 「構造確認」ボタンで選択中のJSONファイルの構造を確認できます<br>
+          💾 「CSV出力」ボタンで検索結果をCSVファイルにエクスポートできます
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let jsonFiles = [];
+    let currentFileIndex = -1;
+    let lastSearchResults = null;
+    let lastSearchPaths = null;
+
+    // ディレクトリから読み込み
+    async function loadFromDirectory() {
+      const dirPath = await window.electronAPI.selectDirectory();
+      if (!dirPath) return;
+      
+      console.log('Selected directory:', dirPath);
+      const files = await window.electronAPI.loadJsonDirectory(dirPath);
+      
+      jsonFiles = files.map(f => ({ ...f, checked: false }));
+      displayFileList();
+      updateCounts();
+      
+      console.log(`Loaded ${jsonFiles.length} files from directory`);
+    }
+
+    // ファイル選択から読み込み
+    async function loadFromFiles() {
+      const filePaths = await window.electronAPI.selectFiles();
+      if (filePaths.length === 0) return;
+      
+      console.log('Selected files:', filePaths);
+      const files = await window.electronAPI.loadJsonFiles(filePaths);
+      
+      jsonFiles = files.map(f => ({ ...f, checked: false }));
+      displayFileList();
+      updateCounts();
+      
+      console.log(`Loaded ${jsonFiles.length} files`);
+    }
+
+    // ファイル一覧表示
+    function displayFileList() {
+      const listEl = document.getElementById('fileList');
+      listEl.innerHTML = jsonFiles.map((f, i) => 
+        `<div class="file-item ${currentFileIndex === i ? 'active' : ''}" onclick="selectFile(${i})">
+          <input type="checkbox" 
+                 id="check${i}" 
+                 ${f.checked ? 'checked' : ''} 
+                 onclick="event.stopPropagation(); toggleCheck(${i})" />
+          <label for="check${i}" onclick="event.stopPropagation(); toggleCheck(${i})" title="${f.path || f.name}">${f.name}</label>
+        </div>`
+      ).join('');
+    }
+
+    // チェック切り替え
+    function toggleCheck(index) {
+      jsonFiles[index].checked = !jsonFiles[index].checked;
+      updateCounts();
+    }
+
+    // 全選択/解除
+    function toggleAllChecks() {
+      const checkAll = document.getElementById('checkAll').checked;
+      jsonFiles.forEach(f => f.checked = checkAll);
+      displayFileList();
+      updateCounts();
+    }
+
+    // カウント更新
+    function updateCounts() {
+      const checkedCount = jsonFiles.filter(f => f.checked).length;
+      document.getElementById('fileCount').textContent = `${jsonFiles.length} files loaded`;
+      document.getElementById('checkedCount').textContent = `${checkedCount} checked`;
+      
+      const checkAllEl = document.getElementById('checkAll');
+      if (checkedCount === 0) {
+        checkAllEl.checked = false;
+        checkAllEl.indeterminate = false;
+      } else if (checkedCount === jsonFiles.length) {
+        checkAllEl.checked = true;
+        checkAllEl.indeterminate = false;
+      } else {
+        checkAllEl.checked = false;
+        checkAllEl.indeterminate = true;
+      }
+    }
+
+    // ファイル選択
+    function selectFile(index) {
+      currentFileIndex = index;
+      displayFileList();
+      
+      const resultsEl = document.getElementById('results');
+      resultsEl.innerHTML = `
+        <div class="info">
+          📄 選択中: ${jsonFiles[index].name}<br>
+          🔍 検索パスを入力して検索を実行してください<br>
+          🐛 「構造確認」ボタンでこのファイルの中身を確認できます
+        </div>
+      `;
+    }
+
+    // 構造確認
+    function showStructure() {
+      if (currentFileIndex === -1) {
+        alert('ファイルを選択してください');
+        return;
+      }
+
+      const file = jsonFiles[currentFileIndex];
+      const jsonStr = JSON.stringify(file.data, null, 2);
+      const paths = extractPaths(file.data);
+      
+      const resultsEl = document.getElementById('results');
+      resultsEl.innerHTML = `
+        <div class="info">📄 ${file.name} の構造</div>
+        <div class="debug-info">利用可能なパス一覧:
+${paths.join('\n')}</div>
+        <div class="debug-info">JSON全体:
+${jsonStr}</div>
+      `;
+    }
+
+    // パス抽出
+    function extractPaths(obj, prefix = '') {
+      const paths = [];
+      for (const key in obj) {
+        const newPath = prefix ? `${prefix}.${key}` : key;
+        paths.push(newPath);
+        if (obj[key] && typeof obj[key] === 'object' && !Array.isArray(obj[key])) {
+          paths.push(...extractPaths(obj[key], newPath));
+        }
+      }
+      return paths;
+    }
+
+    // 値を取得
+    function getValueByPath(obj, path) {
+      return path.split('.').reduce((current, key) => {
+        return current && current[key] !== undefined ? current[key] : null;
+      }, obj);
+    }
+
+    // 複数パスの値を取得
+    function getValuesByPaths(obj, paths) {
+      const results = {};
+      paths.forEach(path => {
+        const value = getValueByPath(obj, path);
+        if (value !== null && value !== undefined) {
+          results[path] = value;
+        }
+      });
+      return results;
+    }
+
+    // 全ファイル検索
+    function searchAll() {
+      const pathsInput = document.getElementById('searchPath').value.trim();
+      if (!pathsInput) {
+        alert('検索パスを入力してください');
+        return;
+      }
+
+      const paths = pathsInput.split(',').map(p => p.trim()).filter(p => p);
+      const results = [];
+      
+      jsonFiles.forEach(file => {
+        const values = getValuesByPaths(file.data, paths);
+        if (Object.keys(values).length > 0) {
+          results.push({ file: file.name, fields: values });
+        }
+      });
+
+      lastSearchResults = results;
+      lastSearchPaths = paths;
+      displayMultiResults(results, `"${paths.join(', ')}" の全ファイル検索結果`);
+    }
+
+    // チェック済み検索
+    function searchChecked() {
+      const pathsInput = document.getElementById('searchPath').value.trim();
+      if (!pathsInput) {
+        alert('検索パスを入力してください');
+        return;
+      }
+
+      const checkedFiles = jsonFiles.filter(f => f.checked);
+      if (checkedFiles.length === 0) {
+        alert('チェックボックスにチェックを入れたファイルがありません');
+        return;
+      }
+
+      const paths = pathsInput.split(',').map(p => p.trim()).filter(p => p);
+      const results = [];
+      
+      checkedFiles.forEach(file => {
+        const values = getValuesByPaths(file.data, paths);
+        if (Object.keys(values).length > 0) {
+          results.push({ file: file.name, fields: values });
+        }
+      });
+
+      lastSearchResults = results;
+      lastSearchPaths = paths;
+      displayMultiResults(results, `"${paths.join(', ')}" のチェック済みファイル検索結果 (${checkedFiles.length}件中)`);
+    }
+
+    // 現在のファイル検索
+    function searchCurrent() {
+      if (currentFileIndex === -1) {
+        alert('ファイルを選択してください');
+        return;
+      }
+
+      const pathsInput = document.getElementById('searchPath').value.trim();
+      if (!pathsInput) {
+        alert('検索パスを入力してください');
+        return;
+      }
+
+      const paths = pathsInput.split(',').map(p => p.trim()).filter(p => p);
+      const file = jsonFiles[currentFileIndex];
+      const values = getValuesByPaths(file.data, paths);
+      
+      const results = Object.keys(values).length > 0 
+        ? [{ file: file.name, fields: values }] 
+        : [];
+
+      lastSearchResults = results;
+      lastSearchPaths = paths;
+      displayMultiResults(results, `"${paths.join(', ')}" の検索結果`);
+    }
+
+    // 結果表示
+    function displayMultiResults(results, title) {
+      const resultsEl = document.getElementById('results');
+      
+      if (results.length === 0) {
+        resultsEl.innerHTML = `
+          <div class="error">
+            ❌ ${title}: 該当する値が見つかりませんでした<br>
+            💡 「構造確認」ボタンでファイルの実際の構造を確認してください
+          </div>
+        `;
+        return;
+      }
+
+      resultsEl.innerHTML = `
+        <div class="info">✅ ${title}: ${results.length}件見つかりました</div>
+        ${results.map(r => `
+          <div class="result-item">
+            <div class="result-file">📄 ${r.file}</div>
+            <div class="result-fields">
+              ${Object.entries(r.fields).map(([path, value]) => `
+                <div class="result-field">
+                  <div class="result-field-name">${path}:</div>
+                  <div class="result-value">${escapeHtml(typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value))}</div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        `).join('')}
+      `;
+    }
+
+    // CSV出力
+    async function exportResults() {
+      if (!lastSearchResults || lastSearchResults.length === 0) {
+        alert('検索結果がありません。先に検索を実行してください。');
+        return;
+      }
+
+      const success = await window.electronAPI.exportCsv(lastSearchResults, lastSearchPaths);
+      
+      const resultsEl = document.getElementById('results');
+      if (success) {
+        resultsEl.insertAdjacentHTML('afterbegin', `
+          <div class="success">
+            ✅ CSVファイルをエクスポートしました
+          </div>
+        `);
+      } else {
+        resultsEl.insertAdjacentHTML('afterbegin', `
+          <div class="error">
+            ❌ CSVファイルのエクスポートに失敗しました
+          </div>
+        `);
+      }
+    }
+
+    // HTMLエスケープ
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.inne

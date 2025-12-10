@@ -1,0 +1,486 @@
+おっ、解決したんだ！よかった〜😆
+
+チェックボックス機能追加したよ！チェックしたファイルだけ検索できるようにしたから試してみて〜✨
+
+```html
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JSON Viewer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { 
+      font-family: 'Segoe UI', sans-serif; 
+      height: 100vh; 
+      display: flex; 
+      flex-direction: column;
+    }
+    .container { 
+      display: flex; 
+      height: calc(100vh - 60px); 
+    }
+    .header {
+      padding: 15px;
+      background: #2c3e50;
+      color: white;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+    .file-list {
+      width: 300px;
+      border-right: 2px solid #ddd;
+      overflow-y: auto;
+      background: #f8f9fa;
+      display: flex;
+      flex-direction: column;
+    }
+    .file-list-header {
+      padding: 10px 15px;
+      background: #e9ecef;
+      border-bottom: 2px solid #ddd;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: bold;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    .file-item {
+      padding: 10px 15px;
+      cursor: pointer;
+      border-bottom: 1px solid #dee2e6;
+      transition: background 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .file-item:hover { background: #e9ecef; }
+    .file-item.active { background: #007bff; color: white; }
+    .file-item input[type="checkbox"] {
+      cursor: pointer;
+      width: 16px;
+      height: 16px;
+    }
+    .file-item label {
+      cursor: pointer;
+      flex: 1;
+      user-select: none;
+    }
+    .right-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 20px;
+    }
+    .search-box {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    input[type="text"] {
+      flex: 1;
+      min-width: 200px;
+      padding: 10px;
+      border: 2px solid #ddd;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+    button {
+      padding: 10px 20px;
+      background: #007bff;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    button:hover { background: #0056b3; }
+    button.debug { background: #28a745; }
+    button.debug:hover { background: #218838; }
+    button.warning { background: #ffc107; color: #000; }
+    button.warning:hover { background: #e0a800; }
+    .results {
+      flex: 1;
+      overflow-y: auto;
+      border: 2px solid #ddd;
+      border-radius: 4px;
+      padding: 15px;
+      background: white;
+    }
+    .result-item {
+      padding: 12px;
+      margin-bottom: 10px;
+      background: #f8f9fa;
+      border-left: 4px solid #007bff;
+      border-radius: 4px;
+    }
+    .result-file {
+      font-weight: bold;
+      color: #495057;
+      margin-bottom: 5px;
+    }
+    .result-value {
+      color: #212529;
+      word-break: break-all;
+      white-space: pre-wrap;
+      font-family: monospace;
+      font-size: 13px;
+    }
+    .info {
+      padding: 10px;
+      background: #d1ecf1;
+      border-left: 4px solid #0c5460;
+      margin-bottom: 10px;
+      border-radius: 4px;
+    }
+    .error {
+      padding: 10px;
+      background: #f8d7da;
+      border-left: 4px solid #721c24;
+      margin-bottom: 10px;
+      border-radius: 4px;
+    }
+    .warning {
+      padding: 10px;
+      background: #fff3cd;
+      border-left: 4px solid #856404;
+      margin-bottom: 10px;
+      border-radius: 4px;
+    }
+    .debug-info {
+      padding: 10px;
+      background: #d4edda;
+      border-left: 4px solid #28a745;
+      margin-bottom: 10px;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <input type="file" id="fileInput" multiple accept=".json" style="color: white;">
+    <span id="fileCount">0 files loaded</span>
+    <span id="checkedCount" style="margin-left: 10px;">0 checked</span>
+  </div>
+
+  <div class="container">
+    <div class="file-list">
+      <div class="file-list-header">
+        <input type="checkbox" id="checkAll" onchange="toggleAllChecks()">
+        <label for="checkAll">全選択/解除</label>
+      </div>
+      <div id="fileList"></div>
+    </div>
+    
+    <div class="right-panel">
+      <div class="search-box">
+        <input type="text" id="searchPath" placeholder="例: a.b.description or description" />
+        <button onclick="searchAll()">全検索</button>
+        <button onclick="searchChecked()" class="warning">チェック済のみ検索</button>
+        <button onclick="searchCurrent()">現在のファイル</button>
+        <button onclick="showStructure()" class="debug">構造確認</button>
+      </div>
+      
+      <div class="results" id="results">
+        <div class="info">
+          📁 上部でJSONファイルを選択してください<br>
+          ☑️ チェックボックスで検索対象を絞り込めます<br>
+          🔍 検索パスの例: "a.b.description" または "description"<br>
+          🐛 「構造確認」ボタンで選択中のJSONファイルの構造を確認できます
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let jsonFiles = [];
+    let currentFileIndex = -1;
+
+    // ファイル読み込み
+    document.getElementById('fileInput').addEventListener('change', async (e) => {
+      const files = Array.from(e.target.files);
+      jsonFiles = [];
+      
+      for (const file of files) {
+        try {
+          const text = await file.text();
+          const data = JSON.parse(text);
+          jsonFiles.push({ 
+            name: file.name, 
+            data: data,
+            checked: false 
+          });
+          console.log(`Loaded: ${file.name}`, data);
+        } catch (err) {
+          console.error(`Error loading ${file.name}:`, err);
+        }
+      }
+      
+      displayFileList();
+      updateCounts();
+      
+      if (jsonFiles.length > 0) {
+        console.log('全ファイル読み込み完了:', jsonFiles);
+      }
+    });
+
+    // ファイル一覧表示
+    function displayFileList() {
+      const listEl = document.getElementById('fileList');
+      listEl.innerHTML = jsonFiles.map((f, i) => 
+        `<div class="file-item ${currentFileIndex === i ? 'active' : ''}" onclick="selectFile(${i})">
+          <input type="checkbox" 
+                 id="check${i}" 
+                 ${f.checked ? 'checked' : ''} 
+                 onclick="event.stopPropagation(); toggleCheck(${i})" />
+          <label for="check${i}" onclick="event.stopPropagation(); toggleCheck(${i})">${f.name}</label>
+        </div>`
+      ).join('');
+    }
+
+    // チェック切り替え
+    function toggleCheck(index) {
+      jsonFiles[index].checked = !jsonFiles[index].checked;
+      updateCounts();
+      console.log(`${jsonFiles[index].name}: ${jsonFiles[index].checked ? 'チェック' : 'チェック解除'}`);
+    }
+
+    // 全選択/解除
+    function toggleAllChecks() {
+      const checkAll = document.getElementById('checkAll').checked;
+      jsonFiles.forEach(f => f.checked = checkAll);
+      displayFileList();
+      updateCounts();
+      console.log(`全ファイル: ${checkAll ? 'チェック' : 'チェック解除'}`);
+    }
+
+    // カウント更新
+    function updateCounts() {
+      const checkedCount = jsonFiles.filter(f => f.checked).length;
+      document.getElementById('fileCount').textContent = `${jsonFiles.length} files loaded`;
+      document.getElementById('checkedCount').textContent = `${checkedCount} checked`;
+      
+      // 全選択チェックボックスの状態更新
+      const checkAllEl = document.getElementById('checkAll');
+      if (checkedCount === 0) {
+        checkAllEl.checked = false;
+        checkAllEl.indeterminate = false;
+      } else if (checkedCount === jsonFiles.length) {
+        checkAllEl.checked = true;
+        checkAllEl.indeterminate = false;
+      } else {
+        checkAllEl.checked = false;
+        checkAllEl.indeterminate = true;
+      }
+    }
+
+    // ファイル選択
+    function selectFile(index) {
+      currentFileIndex = index;
+      displayFileList();
+      
+      const resultsEl = document.getElementById('results');
+      resultsEl.innerHTML = `
+        <div class="info">
+          📄 選択中: ${jsonFiles[index].name}<br>
+          🔍 検索パスを入力して検索を実行してください<br>
+          🐛 「構造確認」ボタンでこのファイルの中身を確認できます
+        </div>
+      `;
+      
+      console.log('選択したファイル:', jsonFiles[index]);
+    }
+
+    // 構造確認（デバッグ用）
+    function showStructure() {
+      if (currentFileIndex === -1) {
+        alert('ファイルを選択してください');
+        return;
+      }
+
+      const file = jsonFiles[currentFileIndex];
+      const jsonStr = JSON.stringify(file.data, null, 2);
+      
+      // キーのパスを抽出
+      const paths = extractPaths(file.data);
+      
+      const resultsEl = document.getElementById('results');
+      resultsEl.innerHTML = `
+        <div class="info">📄 ${file.name} の構造</div>
+        <div class="debug-info">利用可能なパス一覧:
+${paths.join('\n')}</div>
+        <div class="debug-info">JSON全体:
+${jsonStr}</div>
+      `;
+      
+      console.log('ファイル構造:', file.data);
+      console.log('利用可能なパス:', paths);
+    }
+
+    // パス抽出（再帰的に全てのパスを取得）
+    function extractPaths(obj, prefix = '') {
+      const paths = [];
+      
+      for (const key in obj) {
+        const newPath = prefix ? `${prefix}.${key}` : key;
+        paths.push(newPath);
+        
+        if (obj[key] && typeof obj[key] === 'object' && !Array.isArray(obj[key])) {
+          paths.push(...extractPaths(obj[key], newPath));
+        }
+      }
+      
+      return paths;
+    }
+
+    // 値を取得（ネストされたパス対応）
+    function getValueByPath(obj, path) {
+      return path.split('.').reduce((current, key) => {
+        return current && current[key] !== undefined ? current[key] : null;
+      }, obj);
+    }
+
+    // 全ファイル検索
+    function searchAll() {
+      const path = document.getElementById('searchPath').value.trim();
+      if (!path) {
+        alert('検索パスを入力してください');
+        return;
+      }
+
+      console.log(`全ファイル検索開始: "${path}"`);
+      const results = [];
+      
+      jsonFiles.forEach(file => {
+        const value = getValueByPath(file.data, path);
+        if (value !== null && value !== undefined) {
+          results.push({
+            file: file.name,
+            value: typeof value === 'object' ? JSON.stringify(value, null, 2) : value
+          });
+        }
+      });
+
+      console.log('検索結果:', results);
+      displayResults(results, `"${path}" の全ファイル検索結果`);
+    }
+
+    // チェック済みファイルのみ検索
+    function searchChecked() {
+      const path = document.getElementById('searchPath').value.trim();
+      if (!path) {
+        alert('検索パスを入力してください');
+        return;
+      }
+
+      const checkedFiles = jsonFiles.filter(f => f.checked);
+      
+      if (checkedFiles.length === 0) {
+        alert('チェックボックスにチェックを入れたファイルがありません');
+        return;
+      }
+
+      console.log(`チェック済みファイル検索開始: "${path}" (${checkedFiles.length}件)`);
+      const results = [];
+      
+      checkedFiles.forEach(file => {
+        const value = getValueByPath(file.data, path);
+        if (value !== null && value !== undefined) {
+          results.push({
+            file: file.name,
+            value: typeof value === 'object' ? JSON.stringify(value, null, 2) : value
+          });
+        }
+      });
+
+      console.log('検索結果:', results);
+      displayResults(results, `"${path}" のチェック済みファイル検索結果 (${checkedFiles.length}件中)`);
+    }
+
+    // 現在のファイルのみ検索
+    function searchCurrent() {
+      if (currentFileIndex === -1) {
+        alert('ファイルを選択してください');
+        return;
+      }
+
+      const path = document.getElementById('searchPath').value.trim();
+      if (!path) {
+        alert('検索パスを入力してください');
+        return;
+      }
+
+      console.log(`現在のファイル検索: "${path}"`);
+      const file = jsonFiles[currentFileIndex];
+      const value = getValueByPath(file.data, path);
+      
+      if (value !== null && value !== undefined) {
+        displayResults([{
+          file: file.name,
+          value: typeof value === 'object' ? JSON.stringify(value, null, 2) : value
+        }], `"${path}" の検索結果`);
+      } else {
+        displayResults([], `"${path}" の検索結果`);
+      }
+    }
+
+    // 結果表示
+    function displayResults(results, title) {
+      const resultsEl = document.getElementById('results');
+      
+      if (results.length === 0) {
+        resultsEl.innerHTML = `
+          <div class="error">
+            ❌ ${title}: 該当する値が見つかりませんでした<br>
+            💡 「構造確認」ボタンでファイルの実際の構造を確認してください
+          </div>
+        `;
+        return;
+      }
+
+      resultsEl.innerHTML = `
+        <div class="info">✅ ${title}: ${results.length}件見つかりました</div>
+        ${results.map(r => `
+          <div class="result-item">
+            <div class="result-file">📄 ${r.file}</div>
+            <div class="result-value">${escapeHtml(String(r.value))}</div>
+          </div>
+        `).join('')}
+      `;
+    }
+
+    // HTMLエスケープ
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    // Enterキーで検索
+    document.getElementById('searchPath').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') searchAll();
+    });
+  </script>
+</body>
+</html>
+```
+
+## 追加した機能 ✨
+
+1. **各ファイルにチェックボックス** - クリックでON/OFF
+2. **全選択/解除ボタン** - 上部で一括操作
+3. **「チェック済のみ検索」ボタン** - チェックしたファイルだけ検索
+4. **チェック数表示** - ヘッダーに"○ checked"って出る
+5. **半選択状態対応** - 一部だけチェックしてると全選択ボックスが"-"になる
+
+使い方は簡単！チェックボックスにチェック入れて「チェック済のみ検索」ボタン押すだけ〜😊
+
+8000ファイルあっても、まず全検索して、気になるやつだけチェック入れて絞り込み検索、みたいな使い方できるよ！💪

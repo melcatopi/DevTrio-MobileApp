@@ -1,0 +1,156 @@
+# RAG手法の全体像：基礎から最新トレンドまで
+
+**Retrieval-Augmented Generation（RAG）は、LLMの知識を外部データで拡張する技術として急速に進化しており、現在は単純な「検索→生成」パイプラインから、グラフ構造・エージェント・マルチモーダル対応へと発展している。** 2020年にFacebook AI Researchらが原論文を発表して以降、 [Springer](https://link.springer.com/article/10.1007/s12599-025-00945-3)  [NVIDIA Blog](https://blogs.nvidia.com/blog/what-is-retrieval-augmented-generation/) Naive RAG → Advanced RAG → Modular RAGという進化を経て、2024-2025年には**GraphRAG**、**Agentic RAG**、**Contextual Retrieval**といった新概念が登場。企業の約**60%**がLLMシステムでRAGを採用しており、 [Intelliarts](https://intelliarts.com/blog/enterprise-rag-system-best-practices/) 長文コンテキストLLMの登場後もRAGの重要性は変わらない。
+
+---
+
+## RAGの基本アーキテクチャと三世代の進化
+
+RAGは**情報検索（Retrieval）と生成（Generation）を組み合わせ、LLMが外部知識ベースを参照してから回答を生成するフレームワーク**である。 [arXiv](https://arxiv.org/abs/2312.10997)  [Google Cloud](https://cloud.google.com/use-cases/retrieval-augmented-generation) 基本的なワークフローは4段階で構成される：
+
+1. **Ingestion（取り込み）**：ドキュメントをチャンク化し、埋め込みモデルでベクトル化、ベクトルDBに格納 [Pinecone](https://www.pinecone.io/learn/retrieval-augmented-generation/)
+2. **Retrieval（検索）**：クエリをベクトル化し、類似度検索で関連チャンクを取得 [Pinecone](https://www.pinecone.io/learn/retrieval-augmented-generation/)
+3. **Augmentation（拡張）**：検索結果とクエリを結合してプロンプトを構築 [Pinecone](https://www.pinecone.io/learn/retrieval-augmented-generation/)
+4. **Generation（生成）**：LLMが拡張プロンプトに基づいて回答を生成 [Pinecone](https://www.pinecone.io/learn/retrieval-augmented-generation/)
+
+RAGは三世代に分類される。** [arXiv](https://arxiv.org/abs/2312.10997) Naive RAG**は最もシンプルな実装で、 [MarkTechPost](https://www.marktechpost.com/2024/04/01/evolution-of-rags-naive-rag-advanced-rag-and-modular-rag-architectures/) 約**25%**の回答精度にとどまる [First Line Software](https://firstlinesoftware.com/blog/naive-vs-advanced-rag-retrieval-augmented-generation-how-companies-can-elevate-genai-solutions/) が5行のコードで実装可能。** [NVIDIA Blog](https://blogs.nvidia.com/blog/what-is-retrieval-augmented-generation/) Advanced RAG**は検索前・検索中・検索後の各段階で最適化を施し、 [MyScale](https://www.myscale.com/blog/naive-rag-vs-advanced-rag/) 精度を最大**90%**まで向上させる。 [First Line Software](https://firstlinesoftware.com/blog/naive-vs-advanced-rag-retrieval-augmented-generation-how-companies-can-elevate-genai-solutions/) そして**Modular RAG**は各コンポーネントを独立モジュールとして再構成可能にし、 [arXiv](https://arxiv.org/abs/2407.21059)  [MarkTechPost](https://www.marktechpost.com/2024/04/01/evolution-of-rags-naive-rag-advanced-rag-and-modular-rag-architectures/) 条件分岐・並列実行・ループ処理などの複雑なパターンを実現する。 [arxiv](https://arxiv.org/abs/2407.21059)
+
+---
+
+## Naive RAGの仕組みと限界点
+
+Naive RAGは「Retrieve-Read」フレームワークとも呼ばれ、 [IBM](https://www.ibm.com/think/topics/rag-techniques)  [Weights & Biases](https://wandb.ai/site/articles/rag-techniques/) ドキュメントを単純にチャンク分割してベクトル化し、コサイン類似度で検索する。 [Zilliz](https://zilliz.com/blog/advancing-llms-native-advanced-modular-rag-approaches) 実装が容易でFine-tuning不要というメリットがある一方、**4つの重大な限界**を抱えている。
+
+第一に**検索精度の問題**がある。Precision/Recallが低く、無関係なチャンクを取得しやすい。第二に**生成の問題**として、関連コンテキストがあってもハルシネーションが発生する。 [MarkTechPost](https://www.marktechpost.com/2024/04/01/evolution-of-rags-naive-rag-advanced-rag-and-modular-rag-architectures/) 第三に**コンテキスト制限**により、クエリの広い文脈を理解できず、ユーザー意図と合わない回答になりやすい。第四に**スケーラビリティ問題**として、データ量増加に伴い検索速度が低下する。 [ADaSci](https://adasci.org/how-does-modular-rag-improve-upon-naive-rag/)
+
+これらの限界から、Naive RAGはプロトタイプやPOC、シンプルなFAQシステムには適しているが、本番環境や高精度が要求される業務には不向きである。 [IBM](https://www.ibm.com/think/topics/rag-techniques)
+
+---
+
+## Advanced RAGが実現する三段階の最適化
+
+Advanced RAGはNaive RAGの課題を**Pre-retrieval（検索前）**、**Retrieval（検索中）**、**Post-retrieval（検索後）**の三段階で解決する。 [MarkTechPost](https://www.marktechpost.com/2024/04/01/evolution-of-rags-naive-rag-advanced-rag-and-modular-rag-architectures/) [arXiv](https://arxiv.org/html/2407.21059v1)
+
+### Pre-retrieval最適化
+
+検索前の最適化は、入力データの品質向上とクエリ変換に焦点を当てる。**チャンキング戦略**としては、RecursiveCharacterTextSplitter（意味的関連性を保持した再帰分割）、SemanticChunker（類似文の結合）、Small-to-Big Chunking（検索用に小チャンク、生成用に大コンテキストを使用） [Medium](https://medium.com/@asimadnan/beyond-vanilla-rag-mastering-advanced-techniques-for-pre-retrieval-retrieval-and-post-retrieval-5ac2a12beff0) などがある。
+
+**クエリ変換**では、Query Rewriting（曖昧なクエリの具体化）、Query Expansion（関連語・類義語の追加）、Query Decomposition（複雑なクエリのサブクエリ分解）、**HyDE（Hypothetical Document Embeddings）**が重要な技術である。HyDEはLLMで仮想的な回答ドキュメントを生成し、それを基に検索することで、短いクエリと長いドキュメント間のセマンティックギャップを解消する。 [Machine Learning Plus](https://www.machinelearningplus.com/gen-ai/hypothetical-document-embedding-hyde-a-smarter-rag-method-to-search-documents/)
+
+### Retrieval最適化
+
+検索段階では**Hybrid Search（ハイブリッド検索）**が中核技術となる。 [Weaviate](https://weaviate.io/blog/hybrid-search-explained)  [Medium](https://medium.com/@myscale/naive-rag-vs-advanced-rag-17b38cda44c1) Dense Retrieval（ベクトル類似度）とSparse Retrieval（BM25によるキーワードベース）を組み合わせ、** [Genesishumanexperience](https://genesishumanexperience.com/2025/11/04/exploring-the-top-25-types-of-retrieval-augmented-generation-rag-a-comprehensive-technical-guide/) RRF（Reciprocal Rank Fusion）**等で融合する。キーワード検索は正確なマッチ・固有名詞・略語に強く、ベクトル検索は文脈・意図の理解に優れるため、両者の長所を統合できる。 [Weaviate](https://weaviate.io/blog/hybrid-search-explained)
+
+### Post-retrieval最適化
+
+検索後の最適化で最も重要なのが**Re-ranking（再ランキング）**である。 [Qdrant](https://qdrant.tech/documentation/search-precision/reranking-semantic-search/)  [Medium](https://medium.com/@asimadnan/beyond-vanilla-rag-mastering-advanced-techniques-for-pre-retrieval-retrieval-and-post-retrieval-5ac2a12beff0) Cross-Encoder（クエリ+ドキュメントを同時処理）、Bi-Encoder（高速だが精度低）、 [Pinecone](https://www.pinecone.io/learn/series/rag/rerankers/) ColBERT（Late Interactionモデル）、LLM-based（RankGPT等）などのモデルがある。Re-rankingにより精度が**20-35%向上**するが、**200-500ms**のレイテンシが追加される。 [CustomGPT](https://customgpt.ai/rag-reranking-techniques/)
+
+**Context Compression（コンテキスト圧縮）**も重要な技術で、取得したドキュメントから不要な情報を削除し、LLMのコンテキストウィンドウを効率的に活用する。
+
+---
+
+## Modular RAGとGraph RAGのアーキテクチャ
+
+### Modular RAG
+
+2024年7月にGaoらがarXivで発表したModular RAGは、RAGを**3層構造**で再定義する。 [arXiv](https://arxiv.org/abs/2407.21059) 最上位の**モジュール層**にはIndexing、Pre-retrieval、Retrieval、Post-retrieval、Generation、Orchestrationの6モジュールがある。 [Towards Data Science](https://towardsdatascience.com/implementing-modular-rag-with-haystack-and-hypster-d2f0ecc88b8f/)  [MarkTechPost](https://www.marktechpost.com/2024/04/01/evolution-of-rags-naive-rag-advanced-rag-and-modular-rag-architectures/) 中間の**サブモジュール層**で各機能を細分化し、最下位の**オペレーター層**で基本操作を定義する。
+
+この設計により、**Linear（線形）**、**Conditional（条件分岐）**、**Branching（並列実行）**、**Looping（反復改善）**という4つのパターンを実現できる。 [arxiv](https://arxiv.org/abs/2407.21059) 各コンポーネントを独立して開発・最適化・交換でき、 [IBM](https://www.ibm.com/think/topics/rag-techniques) A/Bテストも容易になる。 [Towards Data Science](https://towardsdatascience.com/implementing-modular-rag-with-haystack-and-hypster-d2f0ecc88b8f/)
+
+### Graph RAG
+
+Microsoft GraphRAGは2024年中盤にオープンソース化され、GitHubで**10,000以上のスター**を獲得した。** [RAGFlow](https://ragflow.io/blog/the-rise-and-evolution-of-rag-in-2024-a-year-in-review) インデックス段階**では、TextUnit分割→エンティティ・関係抽出→グラフ構築→**Leidenアルゴリズム**によるコミュニティ検出→コミュニティサマリー生成という5ステップを経る。**クエリ段階**では、ローカル検索（特定コミュニティからの回答）とグローバル検索（データセット全体の包括的質問への対応）を使い分ける。
+
+Graph RAGの強みは**マルチホップ推論**と「データセットの主要テーマは？」のような全体的質問への対応である。 [Neo4j](https://neo4j.com/blog/developer/graphrag-and-agentic-architecture-with-neoconverse/) ただし、インデックス構築コストが高く、ベースラインRAGの**3-5倍**のトークン消費がある。この課題に対応するため、**LightRAG**、**Fast GraphRAG**、**LazyGraphRAG**といった軽量版も登場している。
+
+---
+
+## 自律的に進化するAgentic RAGと自己修正型手法
+
+### Agentic RAG
+
+2024年は「エージェントの年」と呼ばれ、Agentic RAGが急成長した。 [GitHub](https://github.com/aishwaryanr/awesome-generative-ai-guide/blob/main/research_updates/rag_research_table.md)  [RAGFlow](https://ragflow.io/blog/the-rise-and-evolution-of-rag-in-2024-a-year-in-review) AIエージェントをRAGパイプラインに統合し、**動的な検索戦略の選択・計画立案・ツール使用・マルチエージェント協調**を実現する。 [Medium](https://medium.com/@yu-joshua/2024-the-year-of-rag-part-1-bdf8a05f818d) [Pinecone](https://www.pinecone.io/learn/retrieval-augmented-generation/)
+
+LlamaIndex方式では、各ドキュメントに対応する**ドキュメントエージェント**と、それらを統括する**トップレベルエージェント（メタエージェント）**の2層構造を採用する。4つの設計パターン（反省・計画・ツール使用・マルチエージェント協調）を組み合わせることで、複雑なクエリへの適応、複数ナレッジベースの統合検索、自己修正と反復改善が可能になる。
+
+### Self-RAGとCRAG
+
+**Self-RAG**（2023年10月、Asaiら）は4種類の**リフレクショントークン**を使用する。[ [arXiv](https://arxiv.org/abs/2310.11511) Retrieve]で検索の必要性を評価、[IsRel]で文書の関連性を評価、[IsSup]で生成がエビデンスに支持されているか評価、[IsUse]で全体的な品質を評価する。 [Selfrag](https://selfrag.github.io/) 検索のオンデマンド実行により不要な検索を回避し、 [arXiv](https://arxiv.org/abs/2310.11511) ChatGPTやLlama2-chatを上回る性能を達成した。 [arXiv](https://arxiv.org/html/2310.11511)
+
+**CRAG（Corrective RAG）**（2024年1月、Yanら）は、T5-largeベースの**検索評価器**で文書の関連性スコアを算出し、 [arXiv](https://arxiv.org/abs/2401.15884) Correct（高信頼度→そのまま使用）、Incorrect（低信頼度→Web検索で補完）、Ambiguous（中間→両方の結果を使用）の3アクションから選択する。** [DataCamp](https://www.datacamp.com/tutorial/corrective-rag-crag) プラグアンドプレイ**で既存RAGに統合できる点が大きな利点である。 [Medium](https://cobusgreyling.medium.com/corrective-rag-crag-5e40467099f8)
+
+---
+
+## マルチモーダルRAGと視覚情報の活用
+
+Multi-modal RAGは、テキストに加えて**画像・図表・チャート**などの視覚情報を統合する。 [Weaviate](https://weaviate.io/blog/multimodal-rag) 3つの主要アプローチがある。
+
+**統一埋め込み空間アプローチ**は、CLIPやVoyage-multimodal-3などのマルチモーダル埋め込みモデルで、テキストと画像を同じベクトル空間にマッピングする。** [Medium](https://medium.com/kx-systems/guide-to-multimodal-rag-for-images-and-text-10dab36e3117) テキストグラウンディングアプローチ**は、GPT-4VやLLaVAなどのマルチモーダルLLMで画像をテキスト説明に変換し、従来のテキストパイプラインを使用する。** [Microsoft Developer Blogs](https://devblogs.microsoft.com/ise/multimodal-rag-with-vision/) 分離ストアアプローチ**は、モダリティごとに別々のストアを維持し、マルチモーダルリランカーで結果を統合する。 [NVIDIA Developer](https://developer.nvidia.com/blog/an-easy-introduction-to-multimodal-retrieval-augmented-generation/)
+
+2024年夏に登場した**ColPali**は、Vision-Language Modelを用いて画像を**1024パッチ**として処理し、テンソルベースリランキングを行う。 [ragflow](https://ragflow.io/blog/the-rise-and-evolution-of-rag-in-2024-a-year-in-review) 雑誌や円グラフなど複雑なドキュメントの理解が可能になり、2025年にマルチモーダルRAGの急成長が予想されている。
+
+---
+
+## 2024-2025年の最新トレンドと評価手法
+
+### Contextual Retrieval
+
+2024年9月にAnthropicが発表した**Contextual Retrieval**は、従来RAGのチャンク分割による文脈喪失問題を解決する。**Contextual Embeddings**で各チャンクに文脈説明を前付けし、**Contextual BM25**で拡張されたコンテキストでインデックスを作成する。検索失敗率を**49%削減**、リランキング併用で**67%削減**という成果を達成した。
+
+### Late Chunking
+
+Jina AIが提案した**Late Chunking**は、テキストチャンキングをembedding後に実行することで、文脈情報をより良く保持する。Mean poolingを使用するembeddingモデルで特に有効である。
+
+### RAGの評価フレームワーク
+
+**RAGAS（Retrieval Augmented Generation Assessment）**はEACL 2024で発表された、**参照不要（Reference-free）評価**が特徴のフレームワークである。主要メトリクスとして、Faithfulness（事実正確性）、Answer Relevancy（回答の関連性）、Context Precision（シグナル・ノイズ比）、Context Recall（検索完全性）を測定する。 [Medium](https://medium.com/data-science/evaluating-rag-applications-with-ragas-81d67b0ee31a) [Medium](https://medium.com/@sahin.samia/mastering-advanced-rag-techniques-a-comprehensive-guide-f0491717998a)
+
+その他、**RAGTruth**（ハルシネーション詳細分析）、**ARAGOG**（自動採点）、**Ragnarök**（TREC 2024 RAG Track向けベースライン）、**LongBench V2**（長文コンテキスト理解テスト）などのベンチマークも登場している。
+
+---
+
+## Long-context LLMとRAGは共存する
+
+GPT-4 Turbo/GPT-4oは**128Kトークン**、Claudeは**200Kトークン**、Gemini 1.5 Proは**200万トークン**のコンテキスト長を持つ。 [Databricks](https://www.databricks.com/blog/long-context-rag-performance-llms) EMNLP 2024 Industry Trackで発表された研究によると、十分なリソースがあればLong-context（LC）LLMが優位だが、**コスト面ではRAGが大幅に低い**。 [ACL Anthology](https://aclanthology.org/2024.emnlp-industry.66/)
+
+| 観点 | Long-context | RAG |
+|------|-------------|-----|
+| 平均性能 | 十分なリソースがあれば優位 | - |
+| コスト | 高い（文脈長に比例） | 大幅に低い |
+| Wikipedia型QA | 優位 | - |
+| 対話型・一般質問 | - | 優位 |
+| デバッグ性 | 不透明 | 追跡可能 |
+
+**Self-Route**などのハイブリッドアプローチでは、モデルの自己反省に基づきRAGかLCを動的に選択し、コストを大幅削減しつつLC相当の性能を維持する。 [arXiv](https://arxiv.org/abs/2407.16833) 結論として、**Long-context LLMでもRAGは不要にならない**。ドメイン固有知識、プロプライエタリデータ、最新情報へのアクセスにはRAGが必須である。 [Unstructured](https://unstructured.io/blog/rag-vs-long-context-models-do-we-still-need-rag)
+
+---
+
+## 実用的な使い分けガイドライン
+
+### シナリオ別RAG手法の選択
+
+| シナリオ | 推奨手法 | 理由 |
+|---------|---------|------|
+| プロトタイプ・POC | Naive RAG | 実装が容易、迅速な検証が可能 |
+| シンプルなFAQ | Naive RAG + 軽量Re-ranker | コスト効率と基本的な精度向上のバランス |
+| 本番環境（高精度要求） | Advanced RAG | 三段階最適化で精度90%達成可能 |
+| 規制産業（医療・金融・法務） | Advanced RAG + Re-ranking + CRAG | 事実性検証と自己修正が重要 |
+| 複雑なマルチソース検索 | Modular RAG / Agentic RAG | 柔軟なパイプライン構成と自律的判断 |
+| ナレッジマネジメント・研究分析 | Graph RAG | マルチホップ推論と全体テーマの把握 |
+| 技術文書・製品カタログ | Multi-modal RAG | 図表・チャートの視覚情報活用 |
+
+### 実装のベストプラクティス
+
+企業でのRAG実装において、**ハイブリッド検索（ベクトル+BM25+スパースベクトルの3way recall）**が最適とされている。 [Microsoft Learn](https://learn.microsoft.com/en-us/azure/search/retrieval-augmented-generation-overview) リランキングでは**20チャンク程度**が最適で、5-10が最も効果的、20以上は性能低下する傾向がある。 [CustomGPT](https://customgpt.ai/rag-reranking-techniques/)
+
+セマンティックチャンキングには**MinerU**、**Docling**、**RAGFlow DeepDoc**などのツールが有効。主要フレームワークとして、**LangChain/LangGraph**（エージェント型RAG構築）、**LlamaIndex**（ドキュメントインデックス・検索最適化）、**RAGFlow**（セマンティックチャンキング・ハイブリッド検索統合）が実績を持つ。
+
+---
+
+## 今後の展望：知識ランタイムへの進化
+
+2025年の短期トレンドとして、**Agentic RAGの慎重な採用**（ドメイン固有の単純なエージェントから開始）、**マルチモーダルRAGの急成長**、**評価フレームワークの成熟**、**GraphRAGのコスト最適化**が予想される。
+
+中長期（2026-2030年）では、RAGは単なる検索技術から**「知識ランタイム」**へと進化する見込みである。検索、検証、推論、アクセス制御、監査証跡を統合運用する形態への移行が進む。EU AI Act（2024年発効）やGDPRへの対応も含め、セキュリティ・ガバナンスの重要性がさらに高まる。 [Data Nucleus](https://datanucleus.dev/rag-and-agentic-ai/what-is-rag-enterprise-guide-2025)
+
+RAGはエージェントベースアーキテクチャにおいても、**グラウンディングメカニズム**として不可欠な存在であり続ける。 [Pinecone](https://www.pinecone.io/learn/retrieval-augmented-generation/) データベースから「RAGエンジン」への進化が、大規模言語モデル時代の情報検索の未来を形作っていく。

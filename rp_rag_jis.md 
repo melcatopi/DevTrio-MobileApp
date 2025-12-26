@@ -1,0 +1,751 @@
+# RAG実装の完全ガイド：7つの手法と実践コード
+
+RAG（Retrieval-Augmented Generation）は、外部知識を活用してLLMの回答精度を大幅に向上させる技術です。本レポートでは、**Naive RAG**から**Multi-modal RAG**まで7つの主要手法について、具体的な実装方法とPythonコード例を網羅的に解説します。各手法は独立して実装可能であり、段階的に高度化することで、用途に応じた最適なRAGシステムを構築できます。
+
+---
+
+## Naive RAGの基本実装フロー
+
+Naive RAGは最もシンプルなRAGパイプラインで、** [MarkTechPost](https://www.marktechpost.com/2024/04/01/evolution-of-rags-naive-rag-advanced-rag-and-modular-rag-architectures/) Document Loading → Chunking → Embedding → Vector Store → Retrieval → Generation**の6ステップで構成されます。 [Superteams](https://www.superteams.ai/blog/how-to-implement-naive-rag-advanced-rag-and-modular-rag) 実装難易度は低く、数時間で動作するシステムを構築可能です。
+
+### 必要なライブラリとセットアップ
+
+```bash
+# コアライブラリのインストール
+pip install langchain langchain-openai langchain-community langchain-text-splitters
+pip install llama-index openai chromadb faiss-cpu sentence-transformers
+```
+
+### LangChainによる完全なNaive RAG実装
+
+```python
+import os
+from dotenv import load_dotenv
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_chroma import Chroma
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough
+
+load_dotenv()
+
+# Step 1: ドキュメントの読み込み
+loader = PyPDFLoader("document.pdf")
+docs = loader.load()
+
+# Step 2: チャンキング（テキスト分割）
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=1000,      # 1チャンクあたりの文字数
+    chunk_overlap=200,    # チャンク間のオーバーラップ
+    separators=["\n\n", "\n", "。", "、", " ", ""]
+)
+splits = text_splitter.split_documents(docs)
+
+# Step 3-4: 埋め込みとベクトルストア作成
+embeddings = OpenAIEmbeddings(model="text-embedding-3-large")
+vectorstore = Chroma.from_documents(
+    documents=splits,
+    embedding=embeddings,
+    persist_directory="./chroma_db"
+)
+retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+
+# Step 5-6: RAGチェーン構築
+def format_docs(docs):
+    return "\n\n".join(doc.page_content for doc in docs)
+
+rag_prompt = ChatPromptTemplate.from_template("""
+以下のコンテキストに基づいて質問に回答してください。
+コンテキスト: {context}
+質問: {question}
+""")
+
+llm = ChatOpenAI(model="gpt-4o", temperature=0)
+
+rag_chain = (
+    {"context": retriever | format_docs, "question": RunnablePassthrough()}
+    | rag_prompt
+    | llm
+    | StrOutputParser()
+)
+
+# 実行
+response = rag_chain.invoke("主なポイントを教えてください")
+print(response)
+```
+
+### LlamaIndexによる簡潔な実装
+
+LlamaIndexはRAGに特化したフレームワークで、** [towardsdatascience](https://towardsdatascience.com/advanced-retrieval-augmented-generation-from-theory-to-llamaindex-implementation-4de1464a9930/)  [Pondhouse Data](https://www.pondhouse-data.com/blog/advanced-rag-hypothetical-document-embeddings) 5行**で基本的なRAGシステムを構築できます。 [Meilisearch](https://www.meilisearch.com/blog/llamaindex-rag)
+
+```python
+from llama_index.core import VectorStoreIndex, SimpleDirectoryReader
+from llama_index.llms.openai import OpenAI
+from llama_index.embeddings.openai import OpenAIEmbedding
+from llama_index.core.settings import Settings
+
+# グローバル設定
+Settings.llm = OpenAI(model="gpt-4o", temperature=0.1)
+Settings.embed_model = OpenAIEmbedding(model="text-embedding-3-small")
+
+# インデックス構築とクエリ実行
+documents = SimpleDirectoryReader("./data").load_data()
+index = VectorStoreIndex.from_documents(documents)
+query_engine = index.as_query_engine()
+response = query_engine.query("この文書の要点は何ですか？")
+```
+
+| 設定項目 | 推奨値 | 説明 |
+|---------|--------|------|
+| チャンクサイズ | 512-1024トークン | 精度とコンテキストのバランス |
+| オーバーラップ | 20-50トークン | コンテキスト連続性の維持 |
+| Top-K | 3-5 | 検索結果の数 |
+| 埋め込みモデル | text-embedding-3-large | OpenAI最新モデル |
+
+---
+
+## Advanced RAGの3段階最適化
+
+Advanced RAGは** [MarkTechPost](https://www.marktechpost.com/2024/04/01/evolution-of-rags-naive-rag-advanced-rag-and-modular-rag-architectures/) Pre-retrieval**、**Retrieval**、**Post-retrieval**の3段階で最適化を行い、 [towardsdatascience](https://towardsdatascience.com/advanced-retrieval-augmented-generation-from-theory-to-llamaindex-implementation-4de1464a9930/)  [Medium](https://medium.com/@mirzasamaddanat/naive-rag-32c0b9c9e5ec) Naive RAGと比較して**15-35%の精度向上**を達成できます。
+
+### Pre-retrieval最適化：HyDEとQuery Rewriting
+
+**HyDE（Hypothetical Document Embeddings）**は、クエリに対する仮想的な回答文書を生成し、その埋め込みで検索することで、検索精度を**10-20%向上**させる手法です。
+
+```python
+from llama_index.core.indices.query.query_transform import HyDEQueryTransform
+from llama_index.core.query_engine import TransformQueryEngine
+
+# HyDE変換の適用
+hyde = HyDEQueryTransform(include_original=True)
+hyde_query_engine = TransformQueryEngine(
+    base_query_engine=index.as_query_engine(),
+    query_transform=hyde
+)
+response = hyde_query_engine.query("機械学習とは何ですか？")
+```
+
+**Query Rewriting**は質問を複数のバリエーションに書き換えて検索カバレッジを向上させます。
+
+```python
+from langchain.retrievers.multi_query import MultiQueryRetriever
+
+multi_query_retriever = MultiQueryRetriever.from_llm(
+    retriever=vectorstore.as_retriever(),
+    llm=ChatOpenAI(model="gpt-3.5-turbo", temperature=0),
+    include_original=True
+)
+# 自動的に3つのクエリバリエーションを生成して検索
+results = multi_query_retriever.get_relevant_documents("RAGとは？")
+```
+
+### Retrieval最適化：Hybrid Search（BM25 + Vector）
+
+Hybrid Searchは**キーワード検索（BM25）**と**セマンティック検索**を組み合わせ、** [towardsdatascience +2](https://towardsdatascience.com/advanced-retrieval-augmented-generation-from-theory-to-llamaindex-implementation-4de1464a9930/) 15-25%の精度向上**を実現します。
+
+```python
+from langchain.retrievers import BM25Retriever, EnsembleRetriever
+
+# Sparse retrieval（BM25）
+bm25_retriever = BM25Retriever.from_documents(splits)
+bm25_retriever.k = 5
+
+# Dense retrieval（Vector）
+vector_retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+
+# ハイブリッド検索（重み付け結合）
+hybrid_retriever = EnsembleRetriever(
+    retrievers=[vector_retriever, bm25_retriever],
+    weights=[0.6, 0.4]  # セマンティック60%、キーワード40%
+)
+results = hybrid_retriever.get_relevant_documents("売上推移を教えて")
+```
+
+### Post-retrieval最適化：Re-ranking
+
+**Re-ranking**は検索結果を再スコアリングし、最も関連性の高い文書を上位に配置します。 [towardsdatascience +2](https://towardsdatascience.com/advanced-retrieval-augmented-generation-from-theory-to-llamaindex-implementation-4de1464a9930/) Cohere Rerankは**20-35%の精度向上**を達成できます。
+
+```python
+from langchain.retrievers import ContextualCompressionRetriever
+from langchain_cohere import CohereRerank
+
+# Cohere Rerankerの設定
+reranker = CohereRerank(
+    cohere_api_key="your-key",
+    top_n=5,
+    model="rerank-english-v3.0"
+)
+
+# 検索結果を20件取得し、上位5件に絞り込む
+compression_retriever = ContextualCompressionRetriever(
+    base_compressor=reranker,
+    base_retriever=vectorstore.as_retriever(search_kwargs={"k": 20})
+)
+reranked_docs = compression_retriever.get_relevant_documents("質問文")
+```
+
+**Cross-Encoder Reranking**（ローカル実行）：
+
+```python
+from sentence_transformers import CrossEncoder
+
+cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+
+def rerank_with_cross_encoder(query: str, docs: list, top_n: int = 5):
+    pairs = [[query, doc.page_content] for doc in docs]
+    scores = cross_encoder.predict(pairs)
+    return sorted(zip(scores, docs), reverse=True)[:top_n]
+```
+
+| 手法 | レイテンシ増加 | 精度向上 | コスト |
+|-----|--------------|---------|-------|
+| HyDE | +200-500ms | +10-20% | LLM 1回 |
+| Hybrid Search | +50-100ms | +15-25% | 最小 |
+| Cohere Rerank | +200-500ms | +20-35% | API課金 |
+
+---
+
+## Modular RAGとLangGraphによる実装
+
+Modular RAGは、RAGパイプラインを**独立したモジュール**に分解し、条件分岐・並列実行・ループ処理を可能にするアーキテクチャです。LangGraphを使用することで、複雑なワークフローを宣言的に構築できます。
+
+### LangGraphの基本構造
+
+```python
+from typing import TypedDict, Annotated, List, Literal
+from langgraph.graph import StateGraph, START, END
+import operator
+
+# 状態スキーマの定義
+class RAGState(TypedDict):
+    question: str
+    query_type: str
+    documents: Annotated[List[str], operator.add]  # 並列実行用リデューサー
+    generation: str
+    loop_count: int
+
+# ノード関数の定義
+def classify_query(state: RAGState) -> dict:
+    """クエリを分類してルーティング先を決定"""
+    # LLMによる分類ロジック
+    return {"query_type": "vectorstore"}  # または "web_search"
+
+def retrieve(state: RAGState) -> dict:
+    """ベクトルストアから検索"""
+    docs = retriever.get_relevant_documents(state["question"])
+    return {"documents": [d.page_content for d in docs]}
+
+def generate(state: RAGState) -> dict:
+    """回答を生成"""
+    context = "\n".join(state["documents"])
+    response = llm.invoke(f"Context: {context}\nQuestion: {state['question']}")
+    return {"generation": response.content}
+```
+
+### 条件分岐によるルーティング
+
+```python
+from pydantic import BaseModel, Field
+
+class RouteQuery(BaseModel):
+    datasource: Literal["vectorstore", "web_search"] = Field(
+        description="クエリの種類に応じたルーティング先"
+    )
+
+def route_question(state: RAGState) -> Literal["vectorstore", "web_search"]:
+    """質問内容に基づいてルーティング"""
+    llm_with_struct = llm.with_structured_output(RouteQuery)
+    result = llm_with_struct.invoke(f"この質問を分類してください: {state['question']}")
+    return result.datasource
+
+# グラフ構築
+workflow = StateGraph(RAGState)
+workflow.add_node("retrieve_vectorstore", retrieve_from_vectorstore)
+workflow.add_node("retrieve_web", retrieve_from_web)
+workflow.add_node("generate", generate)
+
+# 条件分岐エッジ
+workflow.add_conditional_edges(
+    START,
+    route_question,
+    {"vectorstore": "retrieve_vectorstore", "web_search": "retrieve_web"}
+)
+workflow.add_edge("retrieve_vectorstore", "generate")
+workflow.add_edge("retrieve_web", "generate")
+workflow.add_edge("generate", END)
+
+graph = workflow.compile()
+```
+
+### 並列実行とループ処理
+
+```python
+from langgraph.constants import Send
+
+# 並列検索のファンアウト
+def route_to_parallel_retrievers(state: RAGState) -> list:
+    """複数のリトリーバーに同時に検索要求を送信"""
+    return [
+        Send("retrieve_vectorstore", {"query": state["question"]}),
+        Send("retrieve_web", {"query": state["question"]}),
+        Send("retrieve_kg", {"query": state["question"]})
+    ]
+
+# ループ処理（自己修正）
+def grade_generation(state: RAGState) -> Literal["useful", "not_useful", "max_retries"]:
+    """生成結果を評価し、再試行が必要か判定"""
+    if state["loop_count"] >= 3:
+        return "max_retries"
+    if is_answer_relevant(state["generation"], state["question"]):
+        return "useful"
+    return "not_useful"
+
+workflow.add_conditional_edges(
+    "generate",
+    grade_generation,
+    {
+        "useful": END,
+        "not_useful": "transform_query",  # クエリ書き換えへループバック
+        "max_retries": END
+    }
+)
+```
+
+---
+
+## Microsoft GraphRAGの実装
+
+GraphRAGは、文書から**知識グラフ**を構築し、エンティティ間の関係性を活用して回答品質を向上させる手法です。 [Microsoft +2](https://www.microsoft.com/en-us/research/blog/graphrag-unlocking-llm-discovery-on-narrative-private-data/) 従来のRAGと比較して、**包括性で70-80%の優位性**を示します。 [Microsoft](https://www.microsoft.com/en-us/research/blog/graphrag-new-tool-for-complex-data-discovery-now-on-github/)
+
+### セットアップと設定
+
+```bash
+pip install graphrag
+mkdir -p ./myproject/input
+graphrag init --root ./myproject
+```
+
+**settings.yaml**の主要設定：
+
+```yaml
+models:
+  default_chat_model:
+    type: openai_chat
+    model: gpt-4o
+    api_key: ${GRAPHRAG_API_KEY}
+
+chunks:
+  size: 1200
+  overlap: 100
+
+entity_extraction:
+  entity_types: [organization, person, geo, event]
+  max_gleanings: 1
+
+cluster_graph:
+  max_cluster_size: 10
+
+community_reports:
+  max_length: 2000
+```
+
+### インデックス構築とクエリ実行
+
+```bash
+# インデックス構築（エンティティ抽出→グラフ構築→コミュニティ検出）
+graphrag index --root ./myproject
+
+# グローバル検索（全体的なテーマや要約に最適）
+graphrag query --root ./myproject --method global \
+  --query "この文書の主要なテーマは何ですか？"
+
+# ローカル検索（特定エンティティに関する質問に最適）
+graphrag query --root ./myproject --method local \
+  --query "山田太郎の主な業績は？"
+```
+
+### Python APIによるクエリ
+
+```python
+import pandas as pd
+from graphrag.query.structured_search.local_search.search import LocalSearch
+from graphrag.query.llm.oai import ChatOpenAI
+
+# インデックスデータの読み込み
+entities_df = pd.read_parquet("./output/artifacts/entities.parquet")
+relationships_df = pd.read_parquet("./output/artifacts/relationships.parquet")
+community_reports_df = pd.read_parquet("./output/artifacts/community_reports.parquet")
+
+llm = ChatOpenAI(api_key="your-key", model="gpt-4o")
+
+# ローカル検索の実行
+async def local_search(query: str):
+    search = LocalSearch(
+        llm=llm,
+        context_builder=LocalSearchMixedContext(
+            entities=entities_df,
+            relationships=relationships_df,
+            community_reports=community_reports_df
+        ),
+        response_type="Multiple Paragraphs"
+    )
+    result = await search.asearch(query)
+    return result.response
+```
+
+### コスト考慮事項
+
+| データサイズ | モデル | 概算コスト | 処理時間 |
+|------------|-------|----------|---------|
+| 32,000語（書籍1冊） | GPT-4-Turbo | $7 | 10-15分 |
+| 1MB テキスト | GPT-4-Turbo | $30-50 | 35分 |
+| 大規模法務文書 | GPT-4 | $33,000+ | 数時間 |
+
+GraphRAGは**インデックス構築コストが高い**ため、頻繁に更新されないデータセットに適しています。 [GitHub](https://github.com/microsoft/graphrag) [Analytics Vidhya](https://www.analyticsvidhya.com/blog/2024/11/graphrag/)
+
+---
+
+## LlamaIndexによるAgentic RAG実装
+
+Agentic RAGは、**エージェントが自律的に検索戦略を決定**し、必要に応じてツールを使い分ける高度なRAGパターンです。 [RAGFlow](https://ragflow.io/blog/the-rise-and-evolution-of-rag-in-2024-a-year-in-review) 複雑なマルチホップ推論や複数データソースの統合に優れています。
+
+### 基本的なドキュメントエージェント
+
+```python
+from llama_index.core import VectorStoreIndex, SummaryIndex
+from llama_index.core.tools import QueryEngineTool
+from llama_index.core.agent.workflow import FunctionAgent
+from llama_index.llms.openai import OpenAI
+
+# ベクトル検索とサマリー検索のツール作成
+vector_index = VectorStoreIndex.from_documents(documents)
+summary_index = SummaryIndex.from_documents(documents)
+
+query_tools = [
+    QueryEngineTool.from_defaults(
+        query_engine=vector_index.as_query_engine(),
+        name="vector_search",
+        description="具体的な事実や詳細を検索する際に使用"
+    ),
+    QueryEngineTool.from_defaults(
+        query_engine=summary_index.as_query_engine(response_mode="tree_summarize"),
+        name="summarize",
+        description="文書全体の要約や概要を取得する際に使用"
+    )
+]
+
+# エージェント作成
+agent = FunctionAgent(
+    tools=query_tools,
+    llm=OpenAI(model="gpt-4o"),
+    system_prompt="文書に関する質問に回答するエージェントです。必ずツールを使用してください。"
+)
+
+# 実行
+response = await agent.run("この文書の主要なテーマと具体的な数値データを教えてください")
+```
+
+### マルチドキュメントエージェント
+
+```python
+from llama_index.core.objects import ObjectIndex
+from llama_index.core.tools import FunctionTool
+
+async def build_multi_document_agent(docs: dict):
+    """複数文書に対応するメタエージェントを構築"""
+    all_tools = []
+    
+    for doc_name, doc in docs.items():
+        # 文書ごとに専用エージェントを作成
+        doc_index = VectorStoreIndex.from_documents([doc])
+        doc_agent = FunctionAgent(
+            tools=[QueryEngineTool.from_defaults(
+                query_engine=doc_index.as_query_engine(),
+                name=f"search_{doc_name}"
+            )],
+            llm=OpenAI(model="gpt-3.5-turbo")
+        )
+        
+        # エージェントをツールとしてラップ
+        async def query_doc(query: str, agent=doc_agent):
+            return str(await agent.run(query))
+        
+        all_tools.append(FunctionTool.from_defaults(
+            async_fn=query_doc,
+            name=f"tool_{doc_name}",
+            description=f"{doc_name}に関する質問に回答"
+        ))
+    
+    # ツール検索用オブジェクトインデックス
+    obj_index = ObjectIndex.from_objects(all_tools, index_cls=VectorStoreIndex)
+    
+    # メタエージェント（適切なツールを自動選択）
+    return FunctionAgent(
+        tool_retriever=obj_index.as_retriever(similarity_top_k=3),
+        llm=OpenAI(model="gpt-4o"),
+        system_prompt="複数の文書から情報を収集して回答してください。"
+    )
+```
+
+### ReActエージェントパターン
+
+```python
+from llama_index.core.agent.workflow import ReActAgent
+from llama_index.core.tools import FunctionTool
+
+# カスタムツールの定義
+def web_search(query: str) -> str:
+    """Web検索を実行"""
+    # 実装
+    return f"Web検索結果: {query}"
+
+def calculate(expression: str) -> str:
+    """数式を計算"""
+    return str(eval(expression))
+
+# ReActエージェント
+react_agent = ReActAgent(
+    tools=[
+        QueryEngineTool.from_defaults(query_engine=vector_query_engine, name="doc_search"),
+        FunctionTool.from_defaults(fn=web_search, name="web_search"),
+        FunctionTool.from_defaults(fn=calculate, name="calculator")
+    ],
+    llm=OpenAI(model="gpt-4o"),
+    verbose=True  # 推論過程を表示
+)
+
+# Thought → Action → Observation のループで回答を生成
+response = await react_agent.run("2024年のAI市場規模と前年比成長率を計算してください")
+```
+
+---
+
+## Self-RAGとCRAGの実装
+
+**Self-RAG**と**CRAG**は、検索結果の品質を自己評価・修正するメカニズムを持つ高度なRAGパターンです。
+
+### Self-RAGの4つのリフレクショントークン
+
+| トークン | 評価内容 | 値 |
+|---------|---------|---|
+| Retrieve | 検索の必要性 | yes, no, continue |
+| IsRel | 文書の関連性 | relevant, irrelevant |
+| IsSup | 生成の根拠 | fully_supported, partially_supported, no_support |
+| IsUse | 全体的有用性 | 1-5のスコア |
+
+### Self-RAGのプロンプトベース実装
+
+```python
+from pydantic import BaseModel, Field
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+
+class RetrievalDecision(BaseModel):
+    needs_retrieval: bool = Field(description="検索が必要かどうか")
+    confidence: float = Field(description="信頼度スコア 0-1")
+
+class GenerationSupport(BaseModel):
+    support_level: str = Field(description="'fully_supported', 'partially_supported', 'no_support'")
+    unsupported_claims: list = Field(default=[], description="根拠のない主張のリスト")
+
+class SelfRAGController:
+    def __init__(self, llm_model="gpt-4o-mini"):
+        self.llm = ChatOpenAI(model=llm_model, temperature=0)
+    
+    def should_retrieve(self, query: str) -> RetrievalDecision:
+        """Retrieveトークンをエミュレート"""
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", "質問が外部知識の検索を必要とするか判断してください。"),
+            ("human", "質問: {query}")
+        ])
+        return (prompt | self.llm.with_structured_output(RetrievalDecision)).invoke({"query": query})
+    
+    def evaluate_support(self, generation: str, documents: list) -> GenerationSupport:
+        """IsSupportトークンをエミュレート"""
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", "生成された回答が文書によって裏付けられているか評価してください。"),
+            ("human", "回答: {generation}\n\n文書: {documents}")
+        ])
+        return (prompt | self.llm.with_structured_output(GenerationSupport)).invoke({
+            "generation": generation,
+            "documents": "\n".join(documents)
+        })
+```
+
+### CRAGのLangGraph実装
+
+CRAGは検索結果を**Correct/Incorrect/Ambiguous**に分類し、低品質な場合はWeb検索で補完します。 [DataCamp](https://www.datacamp.com/tutorial/corrective-rag-crag)
+
+```python
+from typing import List
+from typing_extensions import TypedDict
+from langgraph.graph import StateGraph, START, END
+from langchain_community.tools.tavily_search import TavilySearchResults
+
+class CRAGState(TypedDict):
+    question: str
+    documents: List[str]
+    web_search: str  # "Yes" or "No"
+    generation: str
+
+class CRAGWorkflow:
+    def __init__(self, retriever):
+        self.retriever = retriever
+        self.web_search = TavilySearchResults(k=3)
+    
+    def evaluate_documents(self, state: CRAGState) -> dict:
+        """文書の関連性を評価"""
+        relevant_docs = []
+        for doc in state["documents"]:
+            grade = self.grade_document(state["question"], doc)
+            if grade.binary_score == "yes":
+                relevant_docs.append(doc)
+        
+        # 関連文書が不足していればWeb検索を実行
+        if len(relevant_docs) < 2:
+            return {"documents": relevant_docs, "web_search": "Yes"}
+        return {"documents": relevant_docs, "web_search": "No"}
+    
+    def web_search_node(self, state: CRAGState) -> dict:
+        """Web検索で知識を補完"""
+        web_results = self.web_search.invoke({"query": state["question"]})
+        web_content = "\n".join([r["content"] for r in web_results])
+        return {"documents": state["documents"] + [web_content]}
+
+# グラフ構築
+workflow = StateGraph(CRAGState)
+workflow.add_node("retrieve", crag.retrieve)
+workflow.add_node("evaluate", crag.evaluate_documents)
+workflow.add_node("web_search", crag.web_search_node)
+workflow.add_node("generate", crag.generate)
+
+workflow.add_edge(START, "retrieve")
+workflow.add_edge("retrieve", "evaluate")
+workflow.add_conditional_edges(
+    "evaluate",
+    lambda s: "web_search" if s["web_search"] == "Yes" else "generate"
+)
+workflow.add_edge("web_search", "generate")
+workflow.add_edge("generate", END)
+
+crag_app = workflow.compile()
+```
+
+---
+
+## Multi-modal RAGの実装
+
+Multi-modal RAGは、**テキスト・画像・表・グラフ**を統合的に処理できるRAGシステムです。ColPaliは従来のOCRパイプラインを不要にし、**ページ画像を直接埋め込む**革新的なアプローチです。
+
+### ColPaliによる文書画像の埋め込み
+
+```python
+import torch
+from PIL import Image
+from colpali_engine.models import ColQwen2, ColQwen2Processor
+from pdf2image import convert_from_path
+
+# モデルのロード
+model = ColQwen2.from_pretrained(
+    "vidore/colqwen2-v1.0",
+    torch_dtype=torch.bfloat16,
+    device_map="cuda:0"
+).eval()
+processor = ColQwen2Processor.from_pretrained("vidore/colqwen2-v1.0")
+
+# PDFを画像に変換
+images = convert_from_path("report.pdf", dpi=150)
+
+# 画像の埋め込み生成
+batch_images = processor.process_images(images).to(model.device)
+with torch.no_grad():
+    image_embeddings = model(**batch_images)
+
+# クエリの埋め込みと検索
+queries = ["Q3の売上は？"]
+batch_queries = processor.process_queries(queries).to(model.device)
+with torch.no_grad():
+    query_embeddings = model(**batch_queries)
+
+# スコア計算（Late Interaction）
+scores = processor.score_multi_vector(query_embeddings, image_embeddings)
+best_page_idx = scores[0].argmax().item()
+```
+
+### LlamaIndexによるマルチモーダルインデックス
+
+```python
+from llama_index.core.indices import MultiModalVectorStoreIndex
+from llama_index.embeddings.clip import ClipEmbedding
+from llama_index.multi_modal_llms.openai import OpenAIMultiModal
+from llama_index.vector_stores.qdrant import QdrantVectorStore
+
+# テキストと画像の両方を格納するベクトルストア
+text_store = QdrantVectorStore(client=client, collection_name="text")
+image_store = QdrantVectorStore(client=client, collection_name="images")
+
+# マルチモーダルインデックス構築
+index = MultiModalVectorStoreIndex.from_documents(
+    documents,
+    storage_context=StorageContext.from_defaults(
+        vector_store=text_store,
+        image_store=image_store
+    ),
+    embed_model=ClipEmbedding()
+)
+
+# GPT-4Vを使用したクエリ
+query_engine = index.as_query_engine(
+    multi_modal_llm=OpenAIMultiModal(model="gpt-4-vision-preview"),
+    similarity_top_k=5,
+    image_similarity_top_k=3
+)
+response = query_engine.query("このチャートが示すトレンドを説明してください")
+```
+
+### モデル比較
+
+| モデル | ViDoReスコア | パラメータ | 用途 |
+|-------|------------|----------|------|
+| ColQwen2 v1.0 | 89.3 | 2B | 本番環境推奨 |
+| ColPali v1.3 | 84.8 | 3B | Gemmaライセンス |
+| ColSmol 500M | 82.3 | 500M | 軽量デプロイ |
+| CLIP ViT-L/14 | - | 400M | テキスト+画像検索 |
+
+---
+
+## 主要フレームワークの比較と選定
+
+| 特徴 | LangChain | LlamaIndex | RAGFlow | Haystack |
+|------|-----------|------------|---------|----------|
+| 主な用途 | 汎用LLMアプリ | データインデックス | 文書処理 | 検索システム |
+| 学習曲線 | 中 | 中-高 | 低（GUI） | 高 |
+| 統合数 | 160+ | 150+ | 限定的 | 中程度 |
+| 最適用途 | プロトタイピング | 複雑なデータ | エンタープライズ | 本番検索 |
+
+### 実装難易度と推奨順序
+
+1. **Naive RAG**（⭐）: 2-4時間で実装可能、基本を理解するのに最適
+2. **Advanced RAG**（⭐⭐）: Hybrid Search + Rerankingで大幅な精度向上
+3. **CRAG**（⭐⭐）: LangGraphで比較的容易に自己修正機能を追加
+4. **Modular RAG**（⭐⭐⭐）: 条件分岐とループで柔軟なワークフロー構築
+5. **Agentic RAG**（⭐⭐⭐⭐）: マルチツール・マルチエージェント連携
+6. **Graph RAG**（⭐⭐⭐⭐）: 大規模文書の全体把握に最適、コスト高
+7. **Multi-modal RAG**（⭐⭐⭐⭐）: 画像・表を含む文書処理に必須
+
+---
+
+## 実装のベストプラクティス
+
+実運用に向けて、以下の点を考慮することで、高品質なRAGシステムを構築できます。
+
+- **段階的な複雑化**: Naive RAGから始め、評価指標（Hit Rate, MRR, Precision, Recall）を測定しながら最適化を追加
+- **Hybrid Searchの標準採用**: ほぼすべてのケースで精度向上が見込めるため、初期実装から組み込むことを推奨
+- **Rerankingの費用対効果**: Cohere APIは高精度だが、Cross-Encoderのローカル実行でコスト削減可能
+- **チャンクサイズの実験**: 512-1024トークンを基準に、ドメインに応じて調整
+- **メタデータフィルタリング**: 日付、ソース、カテゴリでの絞り込みで検索精度を向上
+- **Lost in the Middleへの対策**: 重要な文書を先頭と末尾に配置するリオーダリングを実装
+
+RAGは単なる検索+生成ではなく、用途に応じた最適化の積み重ねで大きな精度差が生まれます。本レポートのコード例を基盤として、段階的に高度化することで、実用レベルのRAGシステムを構築できます。

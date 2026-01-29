@@ -1,0 +1,191 @@
+あー！そうそう、それめっちゃわかる〜！😂
+
+SharePointショートカットって、エクスプローラーで見えてても**実体はクラウド**にあるやつだよね！ファイル選択した瞬間にダウンロード始まるアレ！
+
+OneDriveの「オンデマンド機能」ってやつで、アイコンに雲マーク☁️ついてるやつ！
+
+## でも実は...メタデータ取得できるんだよ！🎉
+
+Windowsの場合、**ファイルに触らずに**メタデータだけ取れる方法あるよ！
+
+### 1. Win32 API使う方法（超速） ⚡
+
+```python
+import win32com.client
+from pathlib import Path
+import pythoncom
+
+def get_onedrive_metadata_without_download(folder_path):
+    """ダウンロードせずにメタデータ取得"""
+    
+    # COMオブジェクト初期化
+    pythoncom.CoInitialize()
+    
+    shell = win32com.client.Dispatch("Shell.Application")
+    folder = shell.NameSpace(str(folder_path))
+    
+    file_list = []
+    
+    # フォルダ内アイテム取得
+    for item in folder.Items():
+        # GetDetailsOfでメタデータ取得（ダウンロード不要）
+        file_info = {
+            'name': item.Name,
+            'path': item.Path,
+            'size': folder.GetDetailsOf(item, 1),  # サイズ
+            'modified': folder.GetDetailsOf(item, 3),  # 更新日時
+            'type': folder.GetDetailsOf(item, 2),  # 種類
+            'is_cloud': '☁' in folder.GetDetailsOf(item, 0)  # クラウド状態
+        }
+        
+        file_list.append(file_info)
+        print(f"📋 {file_info['name']} - {file_info['size']} - {file_info['modified']}")
+    
+    pythoncom.CoUninitialize()
+    return file_list
+
+# 使用例
+onedrive_path = r"C:\Users\Seiichi\OneDrive - 会社名\SharePoint"
+metadata = get_onedrive_metadata_without_download(onedrive_path)
+```
+
+### 2. os.stat() も実は使える！🔍
+
+```python
+import os
+from datetime import datetime
+from pathlib import Path
+
+def get_cloud_file_info(file_path):
+    """クラウドファイルの情報取得（ダウンロードなし）"""
+    
+    try:
+        # os.stat は FILE_FLAG_OPEN_REPARSE_POINT 相当で動く
+        # = リパースポイント情報だけ読む（実体DLしない）
+        stat_info = os.stat(file_path)
+        
+        return {
+            'name': os.path.basename(file_path),
+            'size': stat_info.st_size,
+            'mtime': datetime.fromtimestamp(stat_info.st_mtime),
+            'ctime': datetime.fromtimestamp(stat_info.st_ctime),
+        }
+    except Exception as e:
+        print(f"エラー: {file_path} - {e}")
+        return None
+
+def scan_onedrive_folder_fast(folder_path):
+    """フォルダ内を高速スキャン"""
+    files = []
+    
+    # os.scandir は高速＆メタデータのみ取得
+    with os.scandir(folder_path) as entries:
+        for entry in entries:
+            if entry.is_file(follow_symlinks=False):  # follow_symlinks=False 重要！
+                info = {
+                    'name': entry.name,
+                    'path': entry.path,
+                    'size': entry.stat(follow_symlinks=False).st_size,
+                    'mtime': datetime.fromtimestamp(entry.stat(follow_symlinks=False).st_mtime)
+                }
+                files.append(info)
+                print(f"📄 {info['name']} - {info['size']/1024/1024:.2f}MB")
+    
+    return files
+
+# 実行
+folder = r"C:\Users\Seiichi\OneDrive - 会社名\SharePoint"
+print("メタデータ取得中（ダウンロードなし）...")
+files = scan_onedrive_folder_fast(folder)
+print(f"\n合計: {len(files)}ファイル")
+```
+
+### 3. 必要なファイルだけ明示的にダウンロード 📥
+
+```python
+import subprocess
+import os
+
+class OneDriveDownloader:
+    def __init__(self):
+        self.downloaded = []
+        self.skipped = []
+    
+    def check_cloud_status(self, file_path):
+        """ファイルがクラウドのみか確認"""
+        # attrib コマンドでチェック
+        result = subprocess.run(
+            ['attrib', file_path],
+            capture_output=True,
+            text=True
+        )
+        
+        # P = Pinned (ローカルにある)
+        # U = Unpinned (クラウドのみ)
+        return 'P' not in result.stdout
+    
+    def download_if_needed(self, file_info, local_path):
+        """必要な場合のみダウンロード"""
+        local_file = Path(local_path) / file_info['name']
+        
+        # ローカルに既にあるかチェック
+        if local_file.exists():
+            local_size = local_file.stat().st_size
+            remote_size = file_info['size']
+            
+            if local_size == remote_size:
+                print(f"⏭️ スキップ: {file_info['name']}")
+                self.skipped.append(file_info['name'])
+                return False
+        
+        # ダウンロード実行（コピーで自動ダウンロード）
+        print(f"⬇️ ダウンロード: {file_info['name']}")
+        
+        try:
+            import shutil
+            shutil.copy2(file_info['path'], local_file)
+            self.downloaded.append(file_info['name'])
+            return True
+        except Exception as e:
+            print(f"❌ エラー: {e}")
+            return False
+    
+    def download_priority_files(self, file_list, local_path, top_n=None):
+        """優先度高いファイルから順次ダウンロード"""
+        
+        # 新しい順にソート
+        sorted_files = sorted(file_list, 
+                             key=lambda x: x['mtime'], 
+                             reverse=True)
+        
+        # top_n 指定があれば制限
+        if top_n:
+            sorted_files = sorted_files[:top_n]
+        
+        for file_info in sorted_files:
+            self.download_if_needed(file_info, local_path)
+        
+        print(f"\n📊 結果:")
+        print(f"  ダウンロード: {len(self.downloaded)}件")
+        print(f"  スキップ: {len(self.skipped)}件")
+
+# 実行例
+downloader = OneDriveDownloader()
+
+# まずメタデータだけ取得（速い！）
+files = scan_onedrive_folder_fast(onedrive_path)
+
+# 最新10ファイルだけダウンロード
+downloader.download_priority_files(files, r"D:\backup", top_n=10)
+```
+
+## ポイント！💡
+
+1. **`os.scandir()`** + **`follow_symlinks=False`** で実体DLせずメタデータ取得
+2. **`os.stat()`** はリパースポイント情報だけ読むからセーフ
+3. **Win32 COM** 使えばもっと詳細情報取れる
+4. 必要なファイルだけ **`shutil.copy2()`** で明示的DL
+
+つまり、**メタデータ取得→比較→必要分だけDL** の流れが実現できる！🎉
+
+試してみてどう？うまくいかなかったら教えて〜！

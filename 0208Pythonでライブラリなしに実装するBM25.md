@@ -644,3 +644,374 @@ Jiraチケットだと、こういう工夫で精度かなり上がると思う�
 今の60%精度から、ハイブリッド+Rerankingで75-80%くらいまで狙えるんじゃないかな?✨
 
 何か質問ある?実装で詰まりそうなところとか!🤔
+
+データプール？データセット？はどのように用意したら良いですか？
+
+0:43
+あー!データセットの準備ね!これめっちゃ重要!🔥
+
+JiraからどうやってデータをRAGシステムに食わせるかって話だよね!いくつか方法があるから紹介するね!
+
+1. Jira REST APIで取得(おすすめ!)
+python
+import requests
+from requests.auth import HTTPBasicAuth
+import json
+from datetime import datetime
+
+class JiraDataCollector:
+    def __init__(self, jira_url, username, api_token):
+        """
+        jira_url: 'https://your-company.atlassian.net'
+        username: メールアドレス
+        api_token: Jira APIトークン
+        """
+        self.jira_url = jira_url
+        self.auth = HTTPBasicAuth(username, api_token)
+        self.headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+        }
+    
+    def fetch_tickets(self, jql, max_results=1000, fields=None):
+        """
+        JQLクエリでチケットを取得
+        jql: 'project = PROJ AND status != Closed'
+        """
+        if fields is None:
+            # 取得するフィールドを指定
+            fields = [
+                'summary',
+                'description', 
+                'status',
+                'priority',
+                'assignee',
+                'reporter',
+                'created',
+                'updated',
+                'labels',
+                'components',
+                'comment',  # コメントも重要!
+                'customfield_xxxxx'  # カスタムフィールドも必要なら
+            ]
+        
+        all_tickets = []
+        start_at = 0
+        batch_size = 100  # 一度に取得する件数
+        
+        while True:
+            url = f"{self.jira_url}/rest/api/3/search"
+            
+            params = {
+                'jql': jql,
+                'startAt': start_at,
+                'maxResults': batch_size,
+                'fields': ','.join(fields)
+            }
+            
+            response = requests.get(
+                url,
+                headers=self.headers,
+                auth=self.auth,
+                params=params
+            )
+            
+            if response.status_code != 200:
+                print(f"エラー: {response.status_code}")
+                print(response.text)
+                break
+            
+            data = response.json()
+            issues = data.get('issues', [])
+            
+            if not issues:
+                break
+            
+            all_tickets.extend(issues)
+            print(f"取得済み: {len(all_tickets)} / {data['total']}")
+            
+            start_at += batch_size
+            
+            # max_resultsに達したら終了
+            if len(all_tickets) >= max_results:
+                break
+            
+            # 全部取得したら終了
+            if start_at >= data['total']:
+                break
+        
+        return all_tickets
+    
+    def format_ticket_for_rag(self, issue):
+        """RAG用にチケットデータを整形"""
+        fields = issue.get('fields', {})
+        
+        # コメントの取得
+        comments = []
+        if 'comment' in fields and fields['comment']:
+            for comment in fields['comment'].get('comments', []):
+                comments.append({
+                    'author': comment.get('author', {}).get('displayName', 'Unknown'),
+                    'body': comment.get('body', ''),
+                    'created': comment.get('created', '')
+                })
+        
+        # 整形されたデータ
+        formatted = {
+            'key': issue.get('key'),
+            'summary': fields.get('summary', ''),
+            'description': fields.get('description', ''),
+            'status': fields.get('status', {}).get('name', ''),
+            'priority': fields.get('priority', {}).get('name', ''),
+            'assignee': fields.get('assignee', {}).get('displayName', '') if fields.get('assignee') else '',
+            'reporter': fields.get('reporter', {}).get('displayName', '') if fields.get('reporter') else '',
+            'created': fields.get('created', ''),
+            'updated': fields.get('updated', ''),
+            'labels': fields.get('labels', []),
+            'components': [c.get('name') for c in fields.get('components', [])],
+            'comments': comments,
+            # 検索用に全テキストを結合
+            'full_text': self._create_searchable_text(fields, comments)
+        }
+        
+        return formatted
+    
+    def _create_searchable_text(self, fields, comments):
+        """検索用のテキストを作成"""
+        parts = [
+            fields.get('summary', ''),
+            fields.get('description', ''),
+        ]
+        
+        # コメントも含める
+        for comment in comments:
+            parts.append(comment.get('body', ''))
+        
+        # ラベルも含める
+        if fields.get('labels'):
+            parts.append(' '.join(fields['labels']))
+        
+        return ' '.join(filter(None, parts))
+    
+    def save_dataset(self, tickets, output_file='jira_dataset.json'):
+        """データセットをJSONで保存"""
+        formatted_tickets = [self.format_ticket_for_rag(ticket) for ticket in tickets]
+        
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(formatted_tickets, f, ensure_ascii=False, indent=2)
+        
+        print(f"保存完了: {len(formatted_tickets)}件 -> {output_file}")
+        
+        return formatted_tickets
+
+
+# 使用例
+collector = JiraDataCollector(
+    jira_url='https://your-company.atlassian.net',
+    username='your-email@company.com',
+    api_token='your-api-token'  # Jiraの設定から生成
+)
+
+# 過去1年分のチケットを取得
+jql = 'project = PROJ AND created >= -365d'
+tickets = collector.fetch_tickets(jql, max_results=5000)
+
+# RAG用に整形して保存
+dataset = collector.save_dataset(tickets)
+2. 定期的な更新(増分更新)
+python
+import pickle
+from datetime import datetime, timedelta
+
+class IncrementalJiraCollector(JiraDataCollector):
+    def __init__(self, jira_url, username, api_token, cache_file='jira_cache.pkl'):
+        super().__init__(jira_url, username, api_token)
+        self.cache_file = cache_file
+        self.cache = self._load_cache()
+    
+    def _load_cache(self):
+        """既存のキャッシュを読み込み"""
+        try:
+            with open(self.cache_file, 'rb') as f:
+                return pickle.load(f)
+        except FileNotFoundError:
+            return {
+                'last_update': None,
+                'tickets': {}
+            }
+    
+    def _save_cache(self):
+        """キャッシュを保存"""
+        with open(self.cache_file, 'wb') as f:
+            pickle.dump(self.cache, f)
+    
+    def update_dataset(self):
+        """増分更新"""
+        if self.cache['last_update']:
+            # 前回更新以降のチケットのみ取得
+            last_update = self.cache['last_update']
+            jql = f'updated >= "{last_update}"'
+            print(f"増分更新: {last_update} 以降")
+        else:
+            # 初回は全件取得
+            jql = 'project = PROJ'
+            print("初回: 全件取得")
+        
+        tickets = self.fetch_tickets(jql)
+        
+        # キャッシュを更新
+        for ticket in tickets:
+            key = ticket['key']
+            formatted = self.format_ticket_for_rag(ticket)
+            self.cache['tickets'][key] = formatted
+        
+        # 更新日時を記録
+        self.cache['last_update'] = datetime.now().strftime('%Y-%m-%d %H:%M')
+        self._save_cache()
+        
+        print(f"更新完了: 総チケット数 {len(self.cache['tickets'])}")
+        
+        return list(self.cache['tickets'].values())
+
+
+# 使用例(定期実行)
+collector = IncrementalJiraCollector(
+    jira_url='https://your-company.atlassian.net',
+    username='your-email@company.com',
+    api_token='your-api-token'
+)
+
+# 増分更新実行
+dataset = collector.update_dataset()
+3. データの前処理・クリーニング
+python
+import re
+from bs4 import BeautifulSoup
+
+class JiraDataPreprocessor:
+    @staticmethod
+    def clean_description(description):
+        """Jiraの説明文をクリーニング"""
+        if not description:
+            return ''
+        
+        # HTMLタグを削除(Jiraはリッチテキスト使ってることある)
+        soup = BeautifulSoup(description, 'html.parser')
+        text = soup.get_text()
+        
+        # Jira Wiki記法を削除
+        text = re.sub(r'\{code.*?\}', '', text)
+        text = re.sub(r'\{quote\}', '', text)
+        text = re.sub(r'!.*?!', '', text)  # 画像参照
+        
+        # 余分な空白を削除
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        text = re.sub(r' {2,}', ' ', text)
+        
+        return text.strip()
+    
+    @staticmethod
+    def extract_metadata(ticket):
+        """メタデータを抽出"""
+        return {
+            'has_comments': len(ticket.get('comments', [])) > 0,
+            'num_comments': len(ticket.get('comments', [])),
+            'has_labels': len(ticket.get('labels', [])) > 0,
+            'is_high_priority': ticket.get('priority') in ['High', 'Critical', 'Highest'],
+            'is_recent': (datetime.now() - datetime.fromisoformat(ticket['created'].replace('Z', '+00:00'))).days < 30
+        }
+    
+    @staticmethod
+    def create_chunks(ticket, chunk_size=500):
+        """長いチケットをチャンクに分割(オプション)"""
+        full_text = ticket['full_text']
+        
+        if len(full_text) <= chunk_size:
+            return [ticket]
+        
+        # 文で分割
+        sentences = re.split(r'[。\.]\s*', full_text)
+        chunks = []
+        current_chunk = ''
+        
+        for sentence in sentences:
+            if len(current_chunk) + len(sentence) > chunk_size and current_chunk:
+                chunk_ticket = ticket.copy()
+                chunk_ticket['full_text'] = current_chunk
+                chunk_ticket['is_chunk'] = True
+                chunks.append(chunk_ticket)
+                current_chunk = sentence
+            else:
+                current_chunk += sentence + '。'
+        
+        if current_chunk:
+            chunk_ticket = ticket.copy()
+            chunk_ticket['full_text'] = current_chunk
+            chunk_ticket['is_chunk'] = True
+            chunks.append(chunk_ticket)
+        
+        return chunks
+
+
+# 前処理を適用
+preprocessor = JiraDataPreprocessor()
+
+cleaned_dataset = []
+for ticket in dataset:
+    # クリーニング
+    ticket['description'] = preprocessor.clean_description(ticket['description'])
+    ticket['full_text'] = preprocessor.clean_description(ticket['full_text'])
+    
+    # メタデータ追加
+    ticket['metadata'] = preprocessor.extract_metadata(ticket)
+    
+    # 必要ならチャンク分割
+    chunks = preprocessor.create_chunks(ticket)
+    cleaned_dataset.extend(chunks)
+
+print(f"前処理完了: {len(cleaned_dataset)}件")
+4. データセットの保存形式
+python
+# JSONLで保存(行ごとにJSON、大量データに便利)
+def save_as_jsonl(tickets, output_file='jira_dataset.jsonl'):
+    with open(output_file, 'w', encoding='utf-8') as f:
+        for ticket in tickets:
+            f.write(json.dumps(ticket, ensure_ascii=False) + '\n')
+
+# 読み込み
+def load_from_jsonl(input_file='jira_dataset.jsonl'):
+    tickets = []
+    with open(input_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            tickets.append(json.loads(line))
+    return tickets
+おすすめの運用フロー
+python
+# 1日1回実行するスクリプト
+def daily_update_pipeline():
+    # 1. 増分更新でJiraから取得
+    collector = IncrementalJiraCollector(...)
+    raw_tickets = collector.update_dataset()
+    
+    # 2. 前処理
+    preprocessor = JiraDataPreprocessor()
+    cleaned_tickets = []
+    for ticket in raw_tickets:
+        ticket['description'] = preprocessor.clean_description(ticket['description'])
+        ticket['metadata'] = preprocessor.extract_metadata(ticket)
+        cleaned_tickets.append(ticket)
+    
+    # 3. ハイブリッド検索のインデックスを再構築
+    searcher = JiraHybridSearch(cleaned_tickets)
+    
+    # 4. インデックスを保存(pickle)
+    with open('search_index.pkl', 'wb') as f:
+        pickle.dump(searcher, f)
+    
+    print(f"更新完了: {len(cleaned_tickets)}件")
+
+# cronで毎日実行
+# 0 2 * * * python daily_update.py
+これでデータセットの準備はバッチリ!✨
+
+Seiichiくんの環境だと、何件くらいのチケットがある?数によって戦略変わるから教えて!🤔

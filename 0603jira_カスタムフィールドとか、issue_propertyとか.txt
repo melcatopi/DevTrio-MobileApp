@@ -1,0 +1,1942 @@
+jiraにてカスタムフィールドを追加しました。
+
+jira apiから叩いて動作の変更を加えるのですが、jira上からは非表示にしたいです。
+
+10:54
+
+Jiraのフィールド非表示とAPI書き込みの技術的トレードオフを検討した。
+Jiraのフィールド非表示とAPI書き込みの技術的トレードオフを検討した。
+おっけー、それやりたい気持ちめっちゃ分かる〜！「APIからは触りたいけどUIには出したくない」ってやつね。でもここ、ハマりポイントあるから先に言っとくわ⚡
+
+一番大事な注意点（ここでみんなコケる）
+Jiraの「非表示」って、実は 画面(スクリーン)制御 と紐づいてて、フィールドを隠すと そのままだと API の編集も弾かれる ことがあるの。
+
+具体的にはこんなエラー出る👇
+
+Field 'customfield_xxxxx' cannot be set. 
+It is not on the appropriate screen, or unknown.
+「隠したのに書き込めないじゃん！💢」ってなるやつ。だから "隠す" と "APIで書く" は別々に手当てする必要があるのよ。
+
+やり方
+読み取りだけしたい場合 これは何も気にしなくてOK。隠してようが何だろうが GET /rest/api/2/issue/{key}?fields=customfield_xxxxx で普通に取れる。表示設定はreadには影響しないからね😎
+
+書き込み(更新)もしたい場合 2ステップでいく：
+
+UIから隠す → 方法は2つ
+フィールド設定(Field Configuration)で対象フィールドを 「非表示(Hide)」 にする（その設定使ってる全プロジェクトの画面から消える）
+もしくは単純に Create/Edit/View の スクリーンに追加しない
+APIで書く時は画面制御を上書きする → 編集エンドポイントに overrideScreenSecurity=true を付ける
+PUT /rest/api/3/issue/{issueIdOrKey}?overrideScreenSecurity=true
+これで「画面に無いフィールドでも編集を許可」してくれる。ただし Jira管理者権限(またはConnect/Forgeアプリの相応の権限)が必要 だから、叩くアカウントの権限だけ確認しといて🙏
+
+環境による違いだけ確認させて
+Jira Cloud なら上の overrideScreenSecurity がそのまま使える
+Server / Data Center だと挙動ちょい違うこともあるから、もしDC環境ならそこ教えて。叩き方変えるわ
+どっちの環境か、あと「読むだけ」か「書き込みもする」かだけ教えてくれたら、実際のリクエスト例まで書くよ〜！どっち？😊
+
+jira cloud上です。
+カスタムフィールドのチェックボックスを用意してて
+それにチェック入れたり外したりをしたいです。
+
+10:57
+
+Jira APIのチェックボックス操作方法を検討した。
+Jira APIのチェックボックス操作方法を検討した。
+なるほどね、チェックボックス(複数選択)のカスタムフィールドね！これちょっとクセあるから説明するわ〜📝
+
+まず大事なこと：チェックボックスは「配列」
+Jiraのチェックボックスフィールドって、内部的には 選択肢オプションの配列 なの。だから「チェックを入れる＝配列に入れる」「外す＝配列から抜く」っていう考え方になる。
+
+値の指定は value(表示名) か id(オプションID) のどっちかでいけるよ：
+
+json
+{
+  "fields": {
+    "customfield_xxxxx": [
+      { "value": "対象オプション名" }
+    ]
+  }
+}
+⚠️ ここ超重要：fields で送ると全部上書きされる
+上の fields で送る方法は、配列を まるごと置き換え ちゃうの。だからチェックボックスに選択肢が複数あると、他のチェックが勝手に外れて事故る💥
+
+選択肢が1個だけなら気にしなくていいけど、複数あるなら update の add/remove 使うのが安全👇
+
+チェックを入れる
+
+json
+{
+  "update": {
+    "customfield_xxxxx": [
+      { "add": { "value": "対象オプション名" } }
+    ]
+  }
+}
+チェックを外す
+
+json
+{
+  "update": {
+    "customfield_xxxxx": [
+      { "remove": { "value": "対象オプション名" } }
+    ]
+  }
+}
+全部外す(空にする) ※これは fields で空配列
+
+json
+{ "fields": { "customfield_xxxxx": [] } }
+add/remove なら、いじりたいオプションだけ触って他は無傷だから、トグル処理にはこっちが断然おすすめ🙆‍♀️
+
+実際のリクエスト（非表示フィールドだから override 付き）
+前回言った通り、UIから隠してるフィールドは overrideScreenSecurity=true 付けないと弾かれるから忘れずに：
+
+python
+import requests
+
+url = f"https://your-domain.atlassian.net/rest/api/3/issue/{issue_key}"
+params = {"overrideScreenSecurity": "true"}
+auth = ("your-email@example.com", "API_TOKEN")  # Basic認証
+
+# チェックを入れる例
+payload = {
+    "update": {
+        "customfield_xxxxx": [
+            {"add": {"value": "対象オプション名"}}
+        ]
+    }
+}
+
+res = requests.put(url, json=payload, params=params, auth=auth)
+print(res.status_code, res.text)  # 成功すると 204 (No Content)
+成功すると 204 が返ってくる。ボディは空だから「あれ反応ない？」ってビビらなくて大丈夫よ😎
+
+ハマりどころメモ📌
+overrideScreenSecurity=true は管理者権限が必須 → 叩くアカウントの権限だけ確認しといて
+value は表示名と完全一致 させてね。スペースとか全角半角でズレると Option id 'xxx' is not valid って怒られる
+もし表示名が不安定なら、オプションIDで指定するほうが確実。IDは GET /rest/api/3/issue/{key}/editmeta か、フィールド設定画面のURLから拾えるよ
+選択肢って1個だけ？それとも複数ある？あと「チェック状態を見てトグルしたい(入ってたら外す/無ければ入れる)」みたいな動きが欲しいなら、現在値を読んで判定するロジックも書くよ〜！どんな感じにしたい？😊
+
+選択肢は１個だけです。
+
+10:59
+
+単純な方法で対応することに決めた。
+単純な方法で対応することに決めた。
+あ、それなら話シンプルだわ〜！選択肢1個だけなら、さっき言ってた「他のチェックが事故る」問題が起きないから、updateのadd/remove使わなくても fieldsでまるっと上書き で全然OK👌
+
+チェックを入れる
+json
+{ "fields": { "customfield_xxxxx": [ { "value": "オプション名" } ] } }
+チェックを外す（空配列）
+json
+{ "fields": { "customfield_xxxxx": [] } }
+これだけ。シンプルでしょ😎
+
+Pythonで書くとこんな感じ
+python
+import requests
+
+domain = "https://your-domain.atlassian.net"
+issue_key = "PROJ-123"
+field_id = "customfield_xxxxx"
+option = "オプション名"  # チェックボックスの選択肢の表示名と完全一致させる
+auth = ("your-email@example.com", "API_TOKEN")
+
+def set_checkbox(issue_key, checked: bool):
+    url = f"{domain}/rest/api/3/issue/{issue_key}"
+    params = {"overrideScreenSecurity": "true"}  # 非表示フィールドなので必須
+    value = [{"value": option}] if checked else []
+    payload = {"fields": {field_id: value}}
+    res = requests.put(url, json=payload, params=params, auth=auth)
+    print(res.status_code, res.text)  # 成功は 204
+    return res
+
+# 入れる
+set_checkbox(issue_key, True)
+# 外す
+set_checkbox(issue_key, False)
+念のためのチェックリスト📌
+overrideScreenSecurity=true を忘れない（UIから隠してるフィールドだからね）
+それ叩くアカウントは 管理者権限 必要
+value は選択肢の表示名と完全一致（全角半角・スペースに注意⚡）成功すると 204 返ってくる
+選択肢1個だから、もうこれで完成形だと思う🙆‍♀️ あとは現在チェック入ってるか読みたい時は GET /rest/api/3/issue/{issue_key}?fields=customfield_xxxxx で取れるから、トグル動作したくなったら言って〜！
+
+overrideScreenSecurity=true
+はできないと思ってます。
+
+というのが管理者権限が持ってない人でも扱うことがあるので。
+
+10:59
+
+隠しフィールドと非管理者書き込みの技術的制約を検討した。
+隠しフィールドと非管理者書き込みの技術的制約を検討した。
+あ〜なるほどね、それは超大事なポイント。ごめん、前提が変わってくるわ⚡
+
+で、ここで一個ハッキリ言っとかなきゃいけない現実があって…
+
+残念だけど「完全非表示 ＋ 非管理者が書ける」は両立しない😭
+Jiraの仕様上、非管理者がAPIでフィールドを更新するには、そのフィールドが編集スクリーン(Editスクリーン)に乗ってる必要があるの。逆に言うと、
+
+スクリーンから外す/非表示にする → 書くには overrideScreenSecurity(=管理者権限) が要る
+管理者権限なしで書きたい → スクリーンに乗せる＝UIに出る
+このトレードオフはJiraの権限モデルそのものだから、魔法のフラグで回避…はできないのよ。ここ正直に言っとくね🙏
+
+ただ、やりたいことによっては全然きれいな解決策があるから、3つ出すわ👇
+
+① そもそも「カスタムフィールド」やめて Issueプロパティ にする【イチオシ】
+もしそのチェックボックスが「APIで読み書きする内部フラグ」でしかないなら、これが完璧。Issue Properties っていう、課題に任意のJSONを紐づける仕組みがあって：
+
+PUT  /rest/api/3/issue/{key}/properties/{propertyKey}
+GET  /rest/api/3/issue/{key}/properties/{propertyKey}
+UIには一切出ない（フィールドじゃないから当然）
+必要な権限は Edit Issue だけ（管理者いらない🙆‍♀️）
+スクリーン設定も不要
+チェックON/OFFなんて {"checked": true} みたいなJSON投げるだけ。今やりたいことそのまんまな気がする。
+
+② バックエンドにプロキシ挟む
+ユーザーは直接Jiraを叩かず、サービスアカウント(管理者権限持ち)を持った自前APIサーバー経由で叩く。実際のJira更新は裏で overrideScreenSecurity=true する。フィールドは隠したまま、誰でも自分のエンドポイント経由なら更新できる。ちょい構築コストかかるけど、どうしても「本物のカスタムフィールド」を維持したい時はコレ。
+
+③ Editスクリーンにだけ乗せる（妥協案）
+ViewやCreateからは外して、Editスクリーンにだけ残す。普段の課題画面には出ないけど編集時は見える…って感じ。"完全非表示"ではないから、要件次第。
+
+で、選ぶために一個だけ教えて：そのチェックボックス、JQLで検索したり・自動化ルールやボードで参照したりする必要ある？
+
+ない（APIで読み書きするだけ） → ① Issueプロパティで決まり、一番ラク
+ある（フィールドとして機能してほしい） → ② のプロキシ案で組む
+どっち寄り？😊
+
+①番について詳しくお願いします。
+
+どうやってやればいいかもお願いします。
+
+11:03
+やった、①選んでくれて嬉しい〜！これマジで今回の用途にドンピシャだと思う😆 ちゃんと解説するね。
+
+Issue Properties って何？
+課題(Issue)1個1個に対して、好きなキーで好きなJSONをくっつけられる保管庫みたいなやつ。カスタムフィールドと違ってUIには一切出ないし、スクリーン設定もいらない。必要な権限は普通の Edit Issue 権限だけだから、管理者じゃなくても読み書きできるの。今回みたいな「APIで触る内部フラグ」には理想的🙆‍♀️
+
+エンドポイントは3つだけ
+PUT     /rest/api/3/issue/{issueIdOrKey}/properties/{propertyKey}   # 保存(=作成も更新も同じ)
+GET     /rest/api/3/issue/{issueIdOrKey}/properties/{propertyKey}   # 読み取り
+DELETE  /rest/api/3/issue/{issueIdOrKey}/properties/{propertyKey}   # 削除
+propertyKey は自分で好きに決めるキー名（例：my-checkbox）。中身のJSONも自由。
+
+チェックのON/OFFをやる
+中身は何でもいいけど、シンプルにこんなJSONにしとく：
+
+json
+{ "checked": true }
+チェックを入れる（保存）
+
+PUT /rest/api/3/issue/PROJ-123/properties/my-checkbox
+Body: { "checked": true }
+チェックを外す
+
+PUT /rest/api/3/issue/PROJ-123/properties/my-checkbox
+Body: { "checked": false }
+PUTは作成も更新も同じだから、「すでにあるか」を気にしなくていいのがラク。成功すると新規作成で 201、更新で 200 が返る。
+
+Pythonで書くとこう
+python
+import requests
+
+domain = "https://your-domain.atlassian.net"
+issue_key = "PROJ-123"
+prop_key = "my-checkbox"
+auth = ("your-email@example.com", "API_TOKEN")
+
+def set_checkbox(issue_key, checked: bool):
+    url = f"{domain}/rest/api/3/issue/{issue_key}/properties/{prop_key}"
+    res = requests.put(url, json={"checked": checked}, auth=auth)
+    print(res.status_code)  # 201(新規) or 200(更新)
+    return res
+
+def get_checkbox(issue_key) -> bool:
+    url = f"{domain}/rest/api/3/issue/{issue_key}/properties/{prop_key}"
+    res = requests.get(url, auth=auth)
+    if res.status_code == 404:
+        return False  # まだ一度も設定されてない＝未チェック扱い
+    return res.json()["value"]["checked"]
+
+def toggle_checkbox(issue_key):
+    current = get_checkbox(issue_key)
+    set_checkbox(issue_key, not current)
+    print(f"{current} → {not current}")
+
+# 使い方
+set_checkbox(issue_key, True)    # 入れる
+set_checkbox(issue_key, False)   # 外す
+print(get_checkbox(issue_key))   # 読む
+toggle_checkbox(issue_key)       # トグル
+ハマりどころメモ📌
+ここ、最初みんな引っかかるから先に言っとくわ⚡
+
+GETのレスポンス構造に注意。保存したJSONは value の中に入る。つまり読むときは res.json()["value"]["checked"] ね。{"key": "my-checkbox", "value": {"checked": true}} っていう形で返ってくるから。
+未設定の課題はGETすると404。だから上のコードみたいに「404なら未チェック扱い」ってフォールバック入れとくと安全。最初から全課題に値があるわけじゃないからね。
+JQLで検索したい場合は別の準備が必要。Issueプロパティは普通には検索できなくて、issue.property[my-checkbox].checked = true みたいなJQLを使うには、Forge/Connectアプリで エンティティプロパティのインデックス登録 をしないとダメ。…が、今回「APIで読み書きするだけ」なら検索いらないと思うから、ここは無視でOK🙆‍♀️
+これでUIには一切出ないし、非管理者でもEdit Issue権限さえあれば普通に読み書きできる。今回の要件まるっと満たせるはず😎
+
+ちなみに作っちゃったカスタムフィールドのチェックボックスは、もう使わないなら消すか放置でいいけど、消すと過去データも飛ぶから一応注意ね。何か詰まったら言って〜！
+
+jira側のやり方も教えてください。
+
+11:04
+
+Jira側の設定不要を確認し、カスタムフィールド削除とオートメーション連携を検討した。
+Jira側の設定不要を確認し、カスタムフィールド削除とオートメーション連携を検討した。
+あ〜「Jira側」ね！…ここで朗報なんだけど、Issueプロパティは Jira側でやることほぼゼロなのよ😂 そこがこの方法の最強ポイント。期待させてたらごめんだけど、設定画面ポチポチ系の作業は「ない」が正解🙆‍♀️
+
+順番に整理するね👇
+
+① セットアップ → 何もいらない
+カスタムフィールドって「フィールド作る→スクリーンに乗せる→画面設定する…」って手順あったじゃん？あれが全部いらない。Issueプロパティは課題に直接JSONをくっつける仕組みだから、管理画面で事前に「プロパティを作る」みたいな登録が一切不要。さっきのPUTを叩いた瞬間に存在し始める。だから「Jira側の準備」っていう工程そのものが無いの。これがUIに出ない理由でもあるわけ😎
+
+② 作っちゃったカスタムフィールドの後始末
+これは唯一「Jira側」でやることかも。前に作ったチェックボックスのカスタムフィールド、もう使わないなら掃除しとく👇
+
+歯車(設定) → 課題 → カスタムフィールド → 該当フィールドの … → 削除
+ただし⚠️ 削除すると、そのフィールドに入ってた過去データも全部消える。あと他のスクリーンや自動化ルールで参照されてたらエラー出ることあるから、心配なら削除せずスクリーンから外すだけでもOK。使わなきゃ実害ないし。急ぎじゃないわ。
+
+③ 値が入ってるか確認したい時
+Issueプロパティは課題画面を見ても出てこないから、確認はAPIで👇
+
+GET /rest/api/3/issue/PROJ-123/properties/my-checkbox
+ブラウザでログイン状態のままこのURL開いても中身見れるよ。「ちゃんと保存されてる？」の確認はこれが手っ取り早い。
+
+④ おまけ：自動化ルールから参照したいなら
+もし「チェックが入ってたらこうする」みたいなJira Automationで使いたい場合は、ルール内でスマートバリューとして読める👇
+
+{{issue.properties.my-checkbox.checked}}
+これで条件分岐とかに使える。ただ細かい挙動はバージョンや書き方でブレることあるから、使うなら一回テストルールで {{issue.properties.my-checkbox}} がちゃんと出るか確認してからにして。ここ使う予定ある？
+
+まとめると、Jira側の作業＝基本ナシ、強いて言えば古いカスタムフィールドの掃除だけって感じ。拍子抜けかもだけど、それくらい手軽なのがIssueプロパティの良さなのよ🙆‍♀️✨
+
+カスタムフィールドって消す方向？それとも一旦残しとく？相談乗るよ〜😊
+
+もともとはこういうことをしようとしてました。というのを示します。
+
+pythonからカスタムフィールドを有効化
+pythonからjiraチケットへコメント投稿→listenerにてコメントをトリガーにendpointに発火
+→endpointではカスタムフィールドが有効かどうか判定し有効ならTeams通知をフック
+
+pythonからカスタムフィールドを無効化
+
+こういうことをやってました。
+
+11:12
+あ〜！！なるほど、そういう全体像だったのね。それ先に言ってくれたら…って感じだけど、今わかってよかった😆 これ重要な分岐点だから整理させて。
+
+やりたいことを翻訳するとこう
+Python: フラグON
+  ↓
+Python: コメント投稿
+  ↓ (listener が comment_created で発火)
+endpoint: 「今このチケット、フラグ立ってる？」を判定
+  ↓ 立ってたら
+Teams通知フック
+  ↓
+Python: フラグOFF
+つまりカスタムフィールド(チェックボックス)は 「このコメントは通知対象だよ」っていう一時的なフラグ として使ってるわけね。納得。
+
+で、ここ大事⚡ Issueプロパティでもイケるけど、罠が1個ある
+機能的にはIssueプロパティで完全に置き換え可能。ON/OFFも判定もさっきのコードでできる。でも competition(競合)とタイミングの問題があって、そこだけ気をつけて👇
+
+罠：listenerが発火した時、フラグはまだ立ってる？
+あなたのフロー、こういう順番だよね：
+
+① ON にする
+② コメント投稿
+③ listener発火 → endpointが判定
+④ OFF にする
+この ③でendpointがプロパティを読む とき、ちゃんとONが見えてないといけない。でもJiraのListener(webhook)って非同期で、しかも遅延するのよ。数秒〜時々それ以上ズレることもある。
+
+つまり最悪パターン：
+
+②コメント投稿
+④ OFFにする ← Pythonが先に走っちゃう
+③ listener今ごろ発火 → 読んだらもうOFF💥 → 通知されない
+…っていう取りこぼしが起きうる。今のカスタムフィールド版でも実は同じリスク抱えてたはずだけど、気づいてた？
+
+だから設計をちょっと提案させて🙋‍♀️
+そもそも 「ON→コメント→判定→OFF」ってフラグを行ったり来たりさせる必要ある？ って思ってて。もっとシンプルにできる気がするのよ👇
+
+案A：コメント自体にマーカーを埋める【イチオシ】
+フラグいらない。コメントの中に目印を入れて、endpointはそれを見るだけ：
+
+python
+# 通知したいコメントにだけ目印を付ける
+comment_body = "通知対象です\n\n{{NOTIFY_TEAMS}}"  # 末尾に隠しマーカー等
+endpoint側：
+
+python
+# webhookで飛んできたコメント本文を見る
+if "{{NOTIFY_TEAMS}}" in comment["body"]:
+    notify_teams(...)
+フラグのON/OFFが完全に消える（タイミング罠も消える）
+状態を持たないから競合しない
+マーカーがダサいなら、コメントのvisibilityとかpropertyでも代替可
+案B：コメントにプロパティを付ける（Issueじゃなくてコメントに）
+実はプロパティ、コメント単位でも付けられるの：
+
+PUT /rest/api/3/issue/{key}/comment/{commentId}/properties/{key}
+コメント投稿→そのコメントIDにプロパティ付与→webhookはcomment_idからプロパティ読む。コメントと一蓮托生だから「どのコメントが対象か」が明確で、Issueフラグみたいに後から消す必要もない。
+
+ちょっと確認させて。今の「ON→OFF」って、
+
+そのコメント1件だけ通知したい（＝コメントに紐づく一時フラグ） → 案A か 案B が圧倒的にキレイ。フラグ往復いらなくなる
+チケット全体の状態として「通知モードON/OFF」を持ちたい（複数コメントに効く、人間も切り替える等） → さっきのIssueプロパティ案そのままでOK
+どっち？😊 たぶん①だと思ってて、なら設計まるごとシンプルにできるよ〜！
+
+フロー順番については
+try
+① ON にする 
+② コメント投稿 
+finally
+ ④ OFF にする
+
+という順番にしてます。
+とりあえず、今まで失敗したことはなかったです。
+
+11:17
+あ〜なるほど、try/finallyね。コードの意図はめっちゃ分かる。でもごめん、それ罠が消えてるわけじゃないから、そこだけハッキリ言わせて⚡（失敗してないのはたまたま運がいいだけかもしれん）
+
+なぜ try/finally でも危ういか
+あなたのコードの実行順、こうなってるよね：
+
+python
+try:
+    set_flag(True)       # ① ON
+    post_comment(...)    # ② コメント投稿（API返ってきた＝Jiraに保存された）
+finally:
+    set_flag(False)      # ④ OFF
+ここで②の post_comment が返ってくるのは「コメントが保存された」タイミングであって、「listenerが発火して判定し終わった」タイミングじゃないの。listenerは別プロセスで非同期に走るから、こうなりうる👇
+
+②コメント保存 → Pythonは即②完了
+④ set_flag(False) 実行  ← Pythonこっち先に終わる
+  ……（ここでJira側のwebhookがやっと発火）……
+③ endpointがフラグ読む → もうFalse 💥
+finallyは「②が終わったら必ず④やる」を保証してるだけで、「③が終わるまで④を待つ」は保証してないのよ。Pythonとlistenerは別世界で動いてるから、待ち合わせができてない。
+
+今まで失敗してない理由
+たぶん、
+
+Jiraのwebhookがたまたま速かった（軽い負荷時は1秒以内に発火することも多い）
+set_flag(False) のAPI往復にそこそこ時間かかってて、その間に③が滑り込めてた
+…っていう偶然のタイミングで成立してただけ。負荷が上がったり、Jira Cloud側が混んでたり、ネットワークが遅れた瞬間に、ある日いきなり通知が飛ばなくなる。しかも再現しづらいバグだから原因特定がクソ面倒なやつ😇 こういうの一番タチが悪い。
+
+だから前回の案Aを推したわけ
+これ、そもそもフラグを往復させてるのが諸悪の根源なの。コメント投稿と判定材料が時間的にズレてるからこうなる。コメント自体に判定材料を載せれば、この問題が構造ごと消える👇
+
+python
+# Python側：通知したいコメントにマーカー込みで投稿するだけ
+post_comment(issue_key, "本文\n\n{{NOTIFY_TEAMS}}")
+# ON/OFFのフラグ操作が丸ごと不要に！
+python
+# endpoint側：飛んできたコメント本文を見るだけ
+if "{{NOTIFY_TEAMS}}" in comment_body:
+    notify_teams(...)
+判定材料(マーカー)がコメントと完全に一体だから、webhookがどんだけ遅れて発火しようが、本文には必ずマーカーが入ってる。タイミングに一切依存しない。フラグのON/OFFも消えてコードも短くなる。一石二鳥でしょ😎
+
+マーカーがコメントに見えるのが嫌なら、前回の**案B（コメント単位のプロパティ）**ね。コメントIDにプロパティ付けるやつ。見た目クリーンだけど、APIが1回増える。
+
+正直に言うと、「今動いてるからヨシ！」でいくか、「将来こけるの分かってるから直す」かはあなたの判断🙆‍♀️ でも80%解でいくにしても、これは"いつか必ず踏む地雷"の方だと思うから直しといたほうがいいと思うわ。
+
+聞きたいんだけど、マーカーをコメント本文に入れるの、見た目的にアリ？それとも隠したい？そこで案Aか案Bか決まるよ〜😊
+
+案Bで行きたいです。
+
+13:29
+やった、案Bね！これ見た目クリーンだし、コメントと判定材料が一体化するからタイミング罠も消える。良い選択だと思う😎 ちゃんと組むよ〜！
+
+コメントプロパティのエンドポイント
+PUT  /rest/api/3/issue/{key}/comment/{commentId}/properties/{propertyKey}
+GET  /rest/api/3/issue/{key}/comment/{commentId}/properties/{propertyKey}
+Issueプロパティのコメント版。やることは「コメント投稿→返ってきたcommentIdにプロパティ付与」の2ステップ。
+
+Python側（投稿する方）
+python
+import requests
+
+domain = "https://your-domain.atlassian.net"
+auth = ("your-email@example.com", "API_TOKEN")
+PROP_KEY = "notify-teams"
+
+def post_comment_with_flag(issue_key, body_text):
+    # ① コメント投稿
+    url = f"{domain}/rest/api/3/issue/{issue_key}/comment"
+    payload = {
+        "body": {
+            "type": "doc", "version": 1,
+            "content": [{
+                "type": "paragraph",
+                "content": [{"type": "text", "text": body_text}]
+            }]
+        }
+    }
+    res = requests.post(url, json=payload, auth=auth)
+    res.raise_for_status()
+    comment_id = res.json()["id"]
+
+    # ② そのコメントにプロパティを付与
+    prop_url = f"{domain}/rest/api/3/issue/{issue_key}/comment/{comment_id}/properties/{PROP_KEY}"
+    res2 = requests.put(prop_url, json={"notify": True}, auth=auth)
+    res2.raise_for_status()
+
+    return comment_id
+
+post_comment_with_flag("PROJ-123", "通知対象のコメントです")
+ここで超大事なポイント⚡ もうフラグのON/OFFが要らない。try/finallyも不要。コメント作る時に一緒に目印付けて終わり。前回の地雷が構造ごと消えたわけ🙆‍♀️
+
+endpoint側（webhookで判定する方）
+listenerからは comment_created で飛んでくる。ペイロードから issueKey と commentId を拾って、プロパティを読むだけ👇
+
+python
+from flask import Flask, request
+import requests
+
+app = Flask(__name__)
+domain = "https://your-domain.atlassian.net"
+auth = ("your-email@example.com", "API_TOKEN")
+PROP_KEY = "notify-teams"
+
+@app.route("/jira-webhook", methods=["POST"])
+def webhook():
+    data = request.json
+    issue_key = data["issue"]["key"]
+    comment_id = data["comment"]["id"]
+
+    # コメントプロパティを読む
+    url = f"{domain}/rest/api/3/issue/{issue_key}/comment/{comment_id}/properties/{PROP_KEY}"
+    res = requests.get(url, auth=auth)
+
+    if res.status_code == 404:
+        return "", 200  # プロパティ無し＝通知対象外、スルー
+    if res.json()["value"].get("notify") is True:
+        notify_teams(issue_key, comment_id)
+
+    return "", 200
+
+def notify_teams(issue_key, comment_id):
+    # Teams Webhook叩く処理
+    ...
+ハマりどころメモ📌
+ここ事前に潰しとくと楽👇
+
+GETの中身は value の下。res.json()["value"]["notify"] ね。{"key":"notify-teams","value":{"notify":true}} の形で返る。Issueプロパティと同じ構造。
+プロパティ無し＝404。普通のコメント(目印付けてない)はwebhookでも飛んでくるから、404を「通知対象外」として静かにスルーする処理は必須。これ入れないと普通のコメントで毎回エラーになる💥
+タイミングは安全になったけど、まだ1個だけ順序の注意。Python側で「①コメント投稿」→「②プロパティ付与」の間にwebhookが発火すると、endpointが読んだ時にまだプロパティが無くて404…って理論上ありうる。レアだけど、気になるなら bot/サービスアカウントが付けたコメントだけ webhookで処理する条件にするか、後述の対策で。
+webhookの認証。エンドポイント公開するなら、Jira webhookに秘密のクエリパラメータ付けるとか、IP制限するとか、最低限の防御はしといてね。誰でも叩けると通知偽装されちゃう。
+これでフラグ往復ナシ・見た目クリーン・タイミング罠ほぼ解消、の三拍子そろった😎
+
+一個だけ確認させて。さっきの「①投稿と②プロパティ付与の間にwebhookが滑り込む」レアケース、気にする？気にするなら コメント投稿前にプロパティ用意できない仕様の回避策（例：マーカーを本文に隠し持たせてプロパティと二重化、とか）も出せるよ。どうする？😊
+
+endpointというのはjiraのscriptrunner側のendpointsのことを言ってます。
+
+13:31
+あ〜〜！ScriptRunner の Custom Endpoints のことね！？それめっちゃ大事な情報、先に教えて〜😂 全体像ガラッと変わるわ。整理し直すね。
+
+つまり構成はこうだったのね
+Python ──コメント投稿──> Jira
+                          ↓ (ScriptRunner の Listener が comment発火)
+              ScriptRunner Custom Endpoint (Groovy) が動く
+                          ↓ 判定
+                      Teams通知
+endpointが**Jira内部のScriptRunner(Groovy)**だったってことは、めちゃくちゃ嬉しい話があって👇
+
+朗報：Groovy側は認証もHTTPもいらない⚡
+さっき書いたendpoint側のコード、Pythonで requests.get してwebhook受けて…ってやつ、全部不要になる。ScriptRunnerはJiraの中で動いてるから、APIを外から叩くんじゃなくて内部オブジェクトで直接プロパティ読めるの。認証も不要、HTTP往復も無し、速い🙆‍♀️
+
+コメントプロパティを内部から読むのは EntityPropertyService（または ScriptRunner なら ComponentAccessor 経由）でいける。
+
+Python側（投稿する方）
+ここは前回とほぼ同じ。コメント投稿→commentIdにプロパティ付与：
+
+python
+import requests
+
+domain = "https://your-domain.atlassian.net"
+auth = ("your-email@example.com", "API_TOKEN")
+PROP_KEY = "notify-teams"
+
+def post_comment_with_flag(issue_key, body_text):
+    url = f"{domain}/rest/api/3/issue/{issue_key}/comment"
+    payload = {
+        "body": {
+            "type": "doc", "version": 1,
+            "content": [{"type": "paragraph",
+                         "content": [{"type": "text", "text": body_text}]}]
+        }
+    }
+    res = requests.post(url, json=payload, auth=auth)
+    res.raise_for_status()
+    comment_id = res.json()["id"]
+
+    prop_url = f"{domain}/rest/api/3/issue/{issue_key}/comment/{comment_id}/properties/{PROP_KEY}"
+    requests.put(prop_url, json={"notify": True}, auth=auth).raise_for_status()
+    return comment_id
+ScriptRunner側（Listener で判定）
+ここがガラッと変わる。Custom Endpoint じゃなくて Listener(Comment Created イベント) で組むのが素直👇
+
+groovy
+import com.atlassian.jira.component.ComponentAccessor
+import com.onresolve.scriptrunner.runner.customisers.WithPlugin
+
+def event = event  // Listenerに渡ってくるCommentEvent
+def comment = event.comment
+if (!comment) return
+
+def commentId = comment.id
+
+// コメントプロパティを内部から読む
+def propService = ComponentAccessor.getComponent(
+    com.atlassian.jira.entity.property.JsonEntityPropertyManager)
+
+def json = propService.get(
+    "CommentProperty",   // entityName
+    commentId,           // entityId
+    "notify-teams"       // propertyKey
+)
+
+if (json == null) {
+    return  // プロパティ無し＝通知対象外、スルー
+}
+
+// 中身を判定（保存したJSONが入ってる）
+def slurper = new groovy.json.JsonSlurper()
+def value = slurper.parseText(json.value)
+
+if (value.notify == true) {
+    notifyTeams(event.issue, comment)
+}
+※ プロパティ読み出しのAPIはScriptRunner/Jiraのバージョンで JsonEntityPropertyManager か CommentPropertyService か変わるから、そこは後で実機で合わせよ。考え方は「commentIdをキーにコメントプロパティをJSONで引く」で固定。
+
+確認させて🙋‍♀️
+ここで構成の確認が2つあるんだけど：
+
+Listener派？Custom Endpoint派？
+コメント投稿をJira側のイベントで受けたい → Listener が自然（上のコード）
+でも「endpoints」って明言してたから、もしかして Python から ScriptRunner の Custom Endpoint を直接叩いてる（コメント投稿とは別に、PythonがScriptRunnerのURL叩いて発火させてる）構成？
+もし Custom Endpoint を Python から直接叩くなら、そもそもコメントもプロパティもJira内で完結できて、もっと話シンプルになるかも。
+今の実物、「コメント投稿をトリガーにListenerが動く」で合ってる？それとも「PythonがScriptRunnerのEndpoint URLを叩いてる」？ここで残りの設計決まるから教えて〜😊 認識ズレたまま進むと事故るからね⚡
+
+コメント投稿をトリガーにga
+
+13:32
+ん、途中で切れちゃった？😆 「コメント投稿をトリガーにga…」のあと、続き教えて〜！
+
+たぶん「コメント投稿をトリガーにScriptRunnerのListener(またはEndpoint)が動く」って言おうとしてた感じかな？
+
+もしそうなら、さっきの Listener構成のコードでバッチリ だよ🙆‍♀️ 整理するとこうなる：
+
+Python ──コメント投稿 + commentIdにプロパティ付与──> Jira
+                          ↓ (Comment Created イベント発火)
+              ScriptRunner Listener (Groovy) が動く
+                          ↓ commentId からプロパティを内部で読む
+                      notify == true なら Teams通知
+これでフラグ往復もナシ、外部からのHTTP往復もナシ、認証もナシ。さっき書いたGroovyがそのまま使える🎉
+
+ただ確認したいのが、**ScriptRunnerの「Custom Endpoint」と「Listener」どっちで今組んでる？**ってとこなんだよね。あなたが最初「endpointで判定」って言ってたから、もしかして：
+
+Listener ＝ Jiraのイベント(コメント作成等)を待ち受けて自動で動くやつ
+Custom Endpoint ＝ 外部からURLを叩かれて動くやつ（/rest/scriptrunner/latest/custom/...）
+の使い分けがちょっと気になってて。コメント投稿をトリガーにするなら Listener が自然なんだけど、もし本当にEndpoint使ってるなら「誰がそのEndpointを叩いてるの？」って話になるのよ。
+
+途中で切れた続き、ゆっくりでいいから教えて〜！それで最後ピシッと決まるわ😊
+
+listener側がコメントされたのをトリガーにendpointsを叩いています。
+で、endpoints側でTeams通知をするような流れです。
+
+13:34
+あ〜！！完全に理解した。やっとパズル全部ハマったわ😆 構成こうね：
+
+Python ──コメント投稿──> Jira
+                          ↓
+        ScriptRunner Listener (Comment Created で発火)
+                          ↓ HTTPで叩く
+        ScriptRunner Custom Endpoint
+                          ↓ 判定 → Teams通知
+Listenerが受けて、そこからEndpointをHTTPで叩いて、Endpoint側でTeams投げてるのね。なるほどなるほど。
+
+まず素朴な疑問なんだけど🤔
+なんでListenerとEndpoint分けてるの？ Listenerの中で直接Teams通知すればよくない…？って一瞬思った。でもまあ、
+
+Endpointを他からも叩けるように共通化したい
+Listenerは判定だけ・通知ロジックはEndpointに寄せたい
+既存の作りがそうなってる
+とか理由あるよね。分けてるならそのままでいいと思う。ただ分けてるせいでプロパティ判定をどっちでやるかが論点になるから、そこ整理するね。
+
+どっちでプロパティ読む？→ Listener側がおすすめ
+コメントプロパティ判定は Listener側でやって、通知対象の時だけEndpointを叩く のがキレイ👇
+
+groovy
+// ===== Listener側 (Comment Created) =====
+import com.atlassian.jira.component.ComponentAccessor
+import groovy.json.JsonSlurper
+import groovyx.net.http.RESTClient  // or HttpBuilder系
+
+def comment = event.comment
+if (!comment) return
+def commentId = comment.id
+
+// コメントプロパティを内部から読む
+def propMgr = ComponentAccessor.getComponent(
+    com.atlassian.jira.entity.property.JsonEntityPropertyManager)
+def prop = propMgr.get("CommentProperty", commentId, "notify-teams")
+
+if (prop == null) return            // 目印なし＝対象外、即終了
+def value = new JsonSlurper().parseText(prop.value)
+if (value.notify != true) return    // 念のため中身も確認
+
+// ここまで来たら通知対象 → Endpointを叩く
+def issueKey = event.issue.key
+// Endpointに必要な情報だけ渡す
+callEndpoint(issueKey, commentId)
+なんでListener側で読むのが良いか👇
+
+Endpointを叩く回数が減る（通知対象だけ叩く。普通のコメント全部でEndpoint叩くのは無駄💦）
+「目印なしは即return」で、関係ないコメントを最速で弾ける
+Endpointは「通知して」と言われたら通知するだけ、と役割が単純になる
+⚠️ ただし大事な確認：Listenerからプロパティ、ちゃんと読める？
+ここ地雷ポイント⚡ Listenerが Comment Created で発火するタイミングと、Pythonがコメントプロパティを付与するタイミングの順序問題、まだ残ってるのよ。
+
+あなたのPython、こうだよね：
+
+① コメント投稿（POST /comment）
+② そのcommentIdにプロパティ付与（PUT .../properties）
+①の瞬間にJiraは Comment Created を発火させる。でも②のプロパティ付与はその後。だからListenerが①で即発火すると、まだプロパティが無くて prop == null になりうる💥 さっき言ってた「投稿と付与の間にwebhookが滑り込む」やつが、Listenerだとより起きやすい（内部イベントは速いから）。
+
+だからここは合わせ技にしよ🙆‍♀️
+順序問題を確実に消すなら、プロパティじゃなくてコメント本文にマーカーを入れて、Listenerは本文を見る方が確実かも。コメント本文は①の時点で確定してるから、絶対に取りこぼさない：
+
+groovy
+// Listener側：本文にマーカーがあるか見る
+def body = comment.body
+if (!body?.contains("{{NOTIFY_TEAMS}}")) return
+// → 通知対象、Endpoint叩く
+「本文にマーカー見えるの嫌」って話だったから案B(プロパティ)選んだんだけど、Listener発火の順序問題を考えると、ここはトレードオフなのよ：
+
+方式	見た目	取りこぼしリスク
+コメントプロパティ(案B)	クリーン✨	①②の順序で稀にnull💥
+本文マーカー(案A)	マーカー見える	ゼロ🙆‍♀️
+解決策：両取りできる
+プロパティのクリーンさを保ちつつ取りこぼし無くすなら👇
+
+Listener側でちょっと待つ or リトライ：
+
+groovy
+def prop = null
+3.times {
+    prop = propMgr.get("CommentProperty", commentId, "notify-teams")
+    if (prop != null) return  // 取れたら抜ける
+    Thread.sleep(500)         // 0.5秒待ってリトライ
+}
+if (prop == null) return
+ちょっと泥臭いけど、これで「②のプロパティ付与が間に合ってないだけ」のケースを救える。リトライ3回(最大1.5秒)で実用上はまず取りこぼさない。
+
+整理すると確認したいのこれ👇
+
+ListenerからEndpoint叩く構成は維持でOK？（プロパティ判定はListener側に寄せる前提）
+取りこぼし対策、どっちでいく？
+本文マーカー方式（確実・でもマーカー見える）
+プロパティ＋リトライ方式（クリーン・ちょい泥臭い）
+ぶっちゃけ「マーカー見えても運用上困らない」なら本文方式が一番事故らないんだけど、見た目どうしても気になる？😊 そこ次第で最終形決めよ〜！
+
+見えない方式で行きたいです。
+
+13:36
+りょ！見えない方式＝コメントプロパティ＋リトライで確定ね😎 取りこぼしも潰す最終形いくよ〜！
+
+全体構成（最終形）
+Python ──①コメント投稿 → ②commentIdにプロパティ付与──> Jira
+                          ↓ (Comment Created 発火)
+        ScriptRunner Listener
+          └ プロパティを内部で読む(リトライ付き)
+          └ notify==true なら Endpoint叩く
+                          ↓
+        ScriptRunner Custom Endpoint → Teams通知
+Python側（投稿＋プロパティ付与）
+python
+import requests
+
+domain = "https://your-domain.atlassian.net"
+auth = ("your-email@example.com", "API_TOKEN")
+PROP_KEY = "notify-teams"
+
+def post_comment_with_flag(issue_key, body_text):
+    # ① コメント投稿
+    url = f"{domain}/rest/api/3/issue/{issue_key}/comment"
+    payload = {
+        "body": {
+            "type": "doc", "version": 1,
+            "content": [{"type": "paragraph",
+                         "content": [{"type": "text", "text": body_text}]}]
+        }
+    }
+    res = requests.post(url, json=payload, auth=auth)
+    res.raise_for_status()
+    comment_id = res.json()["id"]
+
+    # ② そのコメントにプロパティ付与（見えない目印）
+    prop_url = f"{domain}/rest/api/3/issue/{issue_key}/comment/{comment_id}/properties/{PROP_KEY}"
+    requests.put(prop_url, json={"notify": True}, auth=auth).raise_for_status()
+    return comment_id
+Listener側（プロパティ判定＋リトライ）
+ここが取りこぼし対策の肝⚡ ②の付与が間に合ってなくても、リトライで救う：
+
+groovy
+import com.atlassian.jira.component.ComponentAccessor
+import groovy.json.JsonSlurper
+
+def comment = event.comment
+if (!comment) return
+def commentId = comment.id
+
+def propMgr = ComponentAccessor.getComponent(
+    com.atlassian.jira.entity.property.JsonEntityPropertyManager)
+
+// ②のプロパティ付与が間に合ってない可能性に備えてリトライ
+def prop = null
+for (int i = 0; i < 3; i++) {
+    prop = propMgr.get("CommentProperty", commentId, "notify-teams")
+    if (prop != null) break
+    Thread.sleep(500)   // 0.5秒待って再挑戦（最大1.5秒）
+}
+
+if (prop == null) return    // それでも無ければ通知対象外、スルー
+
+def value = new JsonSlurper().parseText(prop.value)
+if (value.notify != true) return
+
+// 通知対象 → Endpointを叩く
+def issueKey = event.issue.key
+callEndpoint(issueKey, commentId)   // ←既存の叩く処理
+ハマりどころメモ📌
+実機で詰まりやすいとこ先に潰しとく👇
+
+プロパティ読み出しAPIはバージョン差あり。JsonEntityPropertyManager の .get("CommentProperty", commentId, key) でいけるはずだけど、環境によっては CommentPropertyService 経由が要ることも。prop.value がJSON文字列で返る前提で JsonSlurper してる。まずListenerに log.warn(prop?.value) 仕込んで実際の中身を見るのが一番早い⚡
+commentId の型。comment.id はLong。propMgr.get の引数型が合わないと取れないことあるから、ダメなら commentId as Long で明示。
+リトライのThread.sleepはListenerをブロックする。0.5秒×3＝最大1.5秒、Listenerが固まる。コメント大量投稿される環境だと詰まる可能性あるから、もし高頻度なら回数/間隔は調整して。普通の運用ならこれで十分。
+②のプロパティ付与が失敗したら通知されない。Python側の raise_for_status() でちゃんと例外拾えるようにしといて。①成功②失敗だと「コメントはあるけど通知されない」になるからね。
+確認だけ🙋‍♀️
+ListenerからEndpointをどう叩いてるかまだ見てないんだけど、もしかして既存コードでHTTPClient使ってJiraの自分自身のURL叩いてる感じ？もしそこも見直したいなら貼ってくれたらレビューするし、「そこは動いてるからいい」なら今のままでOK🙆‍♀️
+
+あと一個。前に使ってたカスタムフィールドのチェックボックスはもう不要になったよね？（プロパティに置き換わったから）。あれ消す or 放置どうする〜？😊
+
+http.post(body:postBody, headers:postHeaders, requestContentType:JSON, contentType:JSON)
+で叩いてます。
+
+13:44
+お、http.post で叩いてるのね。それScriptRunnerの定番パターン（HttpBuilder か RESTClient 系のやつ）だ🙆‍♀️ 動いてるなら基本そのままでいいんだけど、せっかくだから今回の構成に合わせて見ておきたいポイントだけ言うね⚡
+
+まず：その叩き方、特に問題なし👍
+http.post(body:..., headers:..., requestContentType:JSON, contentType:JSON) は普通に正しい。Listener→Endpointの内部呼び出しならこれでOK。
+
+ただ今回プロパティ判定をListener側に寄せたから、Endpointに渡すbody(postBody)に何を入れるかがちょい変わる。判定はもう済んでるから、Endpointには「通知に必要な情報だけ」渡せばいい👇
+
+groovy
+def postBody = [
+    issueKey  : event.issue.key,
+    commentId : commentId,
+    summary   : event.issue.summary
+    // Teams通知に必要なものだけ
+]
+ただ⚠️ 確認しておきたいポイント3つ
+① Endpoint側、もう判定してない？
+前の構成だと「Endpoint側でカスタムフィールドが有効か判定」してたよね。今回判定はListenerに移したから、Endpoint側に残ってる古い判定ロジック（カスタムフィールド見てるやつ）は消すか無効化しないと、二重判定or判定ミスで通知飛ばなくなるよ。ここ要確認⚡
+
+② エラーが握りつぶされてない？
+http.post って、相手が4xx/5xx返すと例外投げるの。Listener内で例外出ると、その後の処理止まるし、ログ見ないと気づけない。最低限try/catchで包んどくと安心👇
+
+groovy
+try {
+    def resp = http.post(
+        body: postBody,
+        headers: postHeaders,
+        requestContentType: JSON,
+        contentType: JSON
+    )
+    log.warn("Endpoint応答: ${resp?.status}")
+} catch (Exception e) {
+    log.error("Endpoint呼び出し失敗: ${e.message}", e)
+}
+通知飛ばない時に「Listenerで弾かれた」のか「Endpoint呼び出しで死んだ」のか切り分けできるようになる。
+
+③ 認証ヘッダ入ってる？
+ScriptRunnerのCustom Endpointって、デフォルトだと認証必須なことが多い。postHeaders に認証情報（Basic認証ヘッダとか）入ってる？入ってないと401で弾かれる。もし「自分自身のScriptRunner Endpointを叩く」なら、ここの認証どうしてるか地味にハマるポイント。今は通ってるなら大丈夫だけど、一応👀
+
+ぶっちゃけ提案：そもそもEndpoint要る？🤔
+これ前も一瞬言ったんだけど、判定をListenerに寄せた今、Listenerの中で直接Teams通知しちゃえば、Endpoint丸ごと要らなくない…？
+
+groovy
+// Listenerの中で完結
+if (value.notify == true) {
+    notifyTeams(event.issue, commentId)   // 直接Teams Webhook叩く
+}
+
+def notifyTeams(issue, commentId) {
+    def teamsUrl = "https://outlook.office.com/webhook/..."
+    def card = [text: "${issue.key} に通知対象コメント"]
+    new URL(teamsUrl).openConnection()... // or http使って投げる
+}
+メリット：
+
+HTTP往復が1回減る（Listener→Endpointの内部呼び出しが消える）
+認証問題が消える
+エラーの切り分けポイントが1個減る
+コードが追いやすい
+Endpoint残すべきケース：
+
+そのEndpoint、他からも叩いてる（Python直叩きとか別Listenerとか）
+Teams通知ロジックを1か所に集約したくて共通化してる
+なので確認したいのこれ👇
+
+その Teams通知のEndpoint、今回のListener以外からも叩いてる？
+
+このListenerからしか叩いてない → Endpoint畳んでListenerに統合した方がスッキリする🙆‍♀️
+他からも叩いてる/共通化したい → 今のEndpoint構成のままでOK、上の①②③だけ手当てして
+どっち〜？😊
+
+apiは2のバージョンだけどそっちでも可能？
+
+13:49
+おっと、API v2 ね！うん、全然いける🙆‍♀️ 今回やってること、v2でもv3でも全部サポートされてるから安心して。違いは1個だけ、コメント本文のフォーマットなのよ⚡
+
+v2とv3の違いはコメント本文だけ
+項目	v2	v3
+コメントプロパティ	✅同じ	✅同じ
+エンドポイントのパス	/rest/api/2/...	/rest/api/3/...
+コメント本文	プレーン文字列	ADF(JSON構造)
+プロパティ周りは完全に同じ。違うのはコメント投稿時のbodyだけ。v3はADF(あのゴテゴテしたJSON)だったけど、v2はただの文字列でOKだから、むしろ楽になる😆
+
+Python側（v2版）
+コメント本文がシンプルになる👇
+
+python
+import requests
+
+domain = "https://your-domain.atlassian.net"
+auth = ("your-email@example.com", "API_TOKEN")
+PROP_KEY = "notify-teams"
+
+def post_comment_with_flag(issue_key, body_text):
+    # ① コメント投稿（v2はbodyがただの文字列！）
+    url = f"{domain}/rest/api/2/issue/{issue_key}/comment"
+    res = requests.post(url, json={"body": body_text}, auth=auth)
+    res.raise_for_status()
+    comment_id = res.json()["id"]
+
+    # ② コメントにプロパティ付与（v2でもv3でも全く同じ）
+    prop_url = f"{domain}/rest/api/2/issue/{issue_key}/comment/{comment_id}/properties/{PROP_KEY}"
+    requests.put(prop_url, json={"notify": True}, auth=auth).raise_for_status()
+    return comment_id
+v3だと {"body": {"type":"doc","version":1,"content":[...]}} ってやってたのが、v2なら {"body": "テキスト"} でOK。スッキリ✨
+
+Listener側（Groovy）は変更ナシ
+ここ重要👉 ListenerのGroovyコードは一切変わらない。なぜなら、ScriptRunnerは内部の JsonEntityPropertyManager でプロパティ読んでて、REST APIのバージョンとは無関係だから。v2使おうがv3使おうが、保存されたコメントプロパティは同じ場所に入る。だから前回のGroovyそのまま使える🙆‍♀️
+
+groovy
+def prop = propMgr.get("CommentProperty", commentId, "notify-teams")
+// ↑ APIバージョン関係なく動く
+注意点：v2の地味なハマりどころ📌
+ADFで取得すると本文の中身が変わる。もしListener側で「コメント本文」を見る処理が残ってるなら、v2投稿のコメントはプレーンテキストで入るから、その辺の整合性だけ確認。今回は本文じゃなくてプロパティ見てるから影響ないけど一応。
+v2はいつか非推奨になる可能性。Atlassianは新機能をv3に乗せる傾向だから、長期的にはv3移行も視野に。でも今回の用途(コメント＋プロパティ)はv2で全く問題ないし、急ぐ必要なし。動いてるものを無理に変えなくてOK🙆‍♀️
+要するに 「v2でコメント投稿（楽になる）＋プロパティはバージョン無関係＋Groovyそのまま」 で完成😎
+
+ちなみに今 http.post でEndpoint叩いてるとこも、それはJira REST APIじゃなくてScriptRunnerのCustom Endpoint叩いてるだけだから、v2/v3とは無関係。そのままでOKよ〜。
+
+前回聞いた「Endpoint他からも叩いてる？」の件、まだ気になってるんだけどそこどう〜？😊
+
+コメントにプロパティ付与を実行すると404エラーとなります。
+
+14:08
+お、404きたか〜。これ原因いくつか定番があるから、順番に潰そう🔍 落ち着いていこ。
+
+まず一番ありがちなやつ⚡
+① commentId 取れてる？投稿レスポンスを確認
+requests.post の返りから ["id"] 取ってるけど、ちゃんと値入ってる？まずそこ確認👇
+
+python
+res = requests.post(url, json={"body": body_text}, auth=auth)
+print(res.status_code, res.text)   # ←まずこれ見る
+comment_id = res.json()["id"]
+print("comment_id:", comment_id)   # ←ちゃんとID出てる？
+投稿自体が失敗(401とか)してたら、comment_id が変な値になって、その後のPUTが404になる。①の投稿が成功(201)してるかから確認。
+
+② URLのドメイン・issue_key 合ってる？
+プロパティ付与のURL、組み立てミスってない？実際に叩いてるURL出してみて👇
+
+python
+prop_url = f"{domain}/rest/api/2/issue/{issue_key}/comment/{comment_id}/properties/{PROP_KEY}"
+print("PUT URL:", prop_url)
+PROP_KEY が空文字だったり、comment_id が None だと、パスが崩れて404になる。出力されたURLを目視チェック⚡
+
+次に多いやつ
+③ コメント投稿とプロパティ付与で issue_key ズレてない？
+同じ issue_key 使ってる？投稿は通ったのに、別のキーやIDでプロパティ叩くと404。
+
+④ そのコメント、本当に存在する？権限は？
+稀だけど、コメントが別ユーザーに見えない(visibility制限)とか、叩いてるアカウントにそのissueへの権限が無いと、コメントが「見つからない」扱いで404になることある。
+
+切り分け用：最小コードで試して
+ごちゃごちゃ言ったけど、これ貼って実行してみて👇 どこで死んでるか一発で分かる：
+
+python
+import requests
+
+domain = "https://your-domain.atlassian.net"
+auth = ("your-email@example.com", "API_TOKEN")
+issue_key = "PROJ-123"   # ←実在するキーに
+PROP_KEY = "notify-teams"
+
+# ① 投稿
+url = f"{domain}/rest/api/2/issue/{issue_key}/comment"
+res = requests.post(url, json={"body": "test"}, auth=auth)
+print("=== POST comment ===")
+print("status:", res.status_code)
+print("body:", res.text[:300])
+res.raise_for_status()
+
+comment_id = res.json()["id"]
+print("comment_id:", comment_id)
+
+# ② プロパティ付与
+prop_url = f"{domain}/rest/api/2/issue/{issue_key}/comment/{comment_id}/properties/{PROP_KEY}"
+print("=== PUT property ===")
+print("URL:", prop_url)
+res2 = requests.put(prop_url, json={"notify": True}, auth=auth)
+print("status:", res2.status_code)
+print("body:", res2.text[:300])
+これ実行した結果が知りたい🙋‍♀️
+POSTが201で、PUTが404 → URL組み立て or プロパティのパス問題（②④を疑う）
+POSTから既にエラー → 認証 or issue_key or ドメイン問題
+実行して、status と URL: の出力をそのまま貼って〜！それ見たら原因ほぼ特定できる😎
+
+ちな確認だけど、domain の末尾に余計な / 付いてない？https://xxx.atlassian.net/ みたいに末尾スラッシュあると //rest になって404る、っていうしょーもないやつも稀にあるからそこも一応見て👀
+
+ちゃんとコメントIDは取得できてます。
+で、コメントは問題なく投稿されてますが
+
+が、
+
+14:17
+ふむ、「コメントID取れてる・投稿も成功・でもプロパティPUTで404」ね。じゃあ原因は ②のプロパティ付与のリクエスト自体 に絞られたわ⚡ ここまで切り分けできたの助かる😎
+
+…で、「が、」のあと続き切れてる？😆 PUTのレスポンス（status と body、あと組み立てた URL: の出力）が知りたいんだけど、それ貼ってくれる？
+
+ただ待ってる間に、この状況で404になる定番の犯人を先に潰しとくね👇 たぶんこのどれか：
+
+① domain末尾スラッシュ問題（地味に多い）
+python
+domain = "https://xxx.atlassian.net/"  # ←末尾に / があると
+# → //rest/api/2/... になって404💥
+print(prop_url) した結果、.net//rest みたいにスラッシュ2個になってない？なってたら domain の末尾 / 取る。
+
+② PROP_KEY が空 or None
+python
+PROP_KEY = ""   # ←空だと
+# → .../properties/ で末尾欠けて404
+URL出力で /properties/notify-teams までちゃんと出てるか確認。
+
+③ requests が勝手にURLエンコードして崩れてる
+comment_id を文字列結合してるけど、型が変だったりすると崩れることある。一応 str(comment_id) で明示してみて。
+
+④ ★最有力候補★ そのアカウント、プロパティ書き込み権限ある？
+コメント投稿は通っても、コメントプロパティのPUTは「Edit Issue権限」が要るの。投稿に使ってるアカウントがEdit Issue持ってないと、ここだけ404 or 403になることがある。特に「コメントは追加できるけど編集はできない」権限構成だとハマる⚡
+
+⑤ APIトークンとメールの組み合わせズレ
+auth=("email", "token") のemailが、そのtoken発行したアカウントと一致してる？地味にここ。
+
+で、一番手っ取り早いのは PUTのレスポンスbody見ること。404でもJiraは理由を返してくれること多いのよ👇
+
+python
+res2 = requests.put(prop_url, json={"notify": True}, auth=auth)
+print("status:", res2.status_code)
+print("URL:", prop_url)        # ←これと
+print("body:", res2.text)      # ←これ貼って！
+body に "Issue does not exist" とか "errorMessages" とか入ってるはずだから、それ見たら一発。
+
+切れてる続きと、この出力、貼ってくれる〜？😊
+
+アドレスは、httpps://kari.rickcloud.jp/jira/rest/api/2/issue/TESTISSUE-119/comment/572665/properties/notify-teamsとなってます。
+
+14:21
+あ〜〜！！これ見て一発で分かった😆 そのインスタンス、Atlassian CloudじゃなくてServer/Data Center版だわ⚡
+
+URLよく見て👇
+
+https://kari.rickcloud.jp/jira/rest/api/2/...
+                          ^^^^^
+                      コンテキストパス
+Atlassian Cloud → https://xxx.atlassian.net/rest/...（独自ドメインじゃない、/jira みたいなパスも無い）
+あなたのやつ → 独自ドメイン + /jira ってコンテキストパスがある = 自前ホストのServer/DC版
+道理で…今まで俺がずっと Cloud前提 で話してたから、ちょいズレてた部分あったかも。ごめん🙏 でも構成自体は全部Server/DCでも通用するから安心して。
+
+で、404の原因はこれの可能性高い⚡
+Server/DC版だと、コメントプロパティのAPIパスが微妙に違うことがあるのと、もう一個でかいのが認証方式。
+
+① 認証：Server/DCはAPIトークン(Basic)が使えない
+Cloudは auth=("email", "api_token") だけど、Server/DCはこれが使えないの。代わりに：
+
+PAT (Personal Access Token) をヘッダで渡す（Jira 8.14以降）
+python
+  headers = {"Authorization": "Bearer YOUR_PAT"}
+  requests.put(prop_url, json={"notify": True}, headers=headers)
+もしくは Basic認証だけど (ユーザー名, パスワード)（emailじゃなくてusername）
+python
+  auth = ("username", "password")
+今 ("email", "api_token") で投げてるなら、コメント投稿はたまたま通ってもプロパティ系で弾かれる…みたいなチグハグが起きうる。**コメント投稿は何の認証で通った？**そこ確認⚡
+
+② コメントプロパティAPIのパス、合ってる？
+Server/DCでもパス自体は同じはず👇
+
+/rest/api/2/issue/{key}/comment/{commentId}/properties/{propertyKey}
+これは合ってる。だからパスは問題なさそう。やっぱ怪しいのは認証 or バージョン。
+
+③ ★重要★ そのJiraのバージョンは？
+コメントプロパティAPI、Jiraのバージョンが古いと存在しないの。エンティティプロパティ自体は結構前からあるけど、コメントプロパティのRESTエンドポイントが無いバージョンだと、そのパスが存在しなくて404になる。これ全然ありえる⚡
+
+確認したいこと🙋‍♀️
+そのJira、バージョンいくつ？（右下のフッターか、/rest/api/2/serverInfo 叩くと出る）
+python
+   print(requests.get(f"https://kari.rickcloud.jp/jira/rest/api/2/serverInfo", auth=auth).text)
+コメント投稿はどの認証で通した？（(email, token)？ (username, password)？）
+PUTのレスポンスbody、まだ見てないから貼って👇
+python
+   print(res2.status_code, res2.text)
+特に3のレスポンスbodyが決定打になる。404でも中に "Issue Does Not Exist" なのか "null for uri"（=エンドポイント自体が無い）なのかで原因が割れるのよ：
+
+null for uri: .../properties/... → エンドポイント自体が無い＝バージョン古い説濃厚
+errorMessages: [...] → 権限 or 認証説
+この res2.text の中身、貼ってくれる〜？それで白黒つくわ😎
+
+バージョンは8.20.2でした。
+
+null for uriの記述があります。。。
+
+14:28
+ビンゴ〜〜！原因確定したわ😎 null for uri = そのエンドポイント自体が存在しないってことね。
+
+でもこれ、バージョンのせいじゃないのよ（8.20.2ならコメントプロパティAPIは普通にある）。真犯人はおそらく propertyKey のハイフン - ⚡
+
+犯人：notify-teams のハイフン疑惑
+Server/DC版の古めのルーティングだと、プロパティキーにハイフンとか特定文字が入るとパスのマッチに失敗して null for uri を吐くことがあるの。これめっちゃハマるやつ💢
+
+まずキーをハイフン無しに変えて試して👇
+
+python
+PROP_KEY = "notifyteams"      # ハイフン消す
+# または
+PROP_KEY = "notify_teams"     # アンダースコアならOKなこと多い
+これで通ったら確定。Listener側の propMgr.get("CommentProperty", commentId, "notifyteams") のキーも合わせてね。
+
+もしそれでもダメなら：エンドポイント存在チェック
+そもそもコメントプロパティAPIが生きてるか、GETで叩いて確認してみて。存在しないキーをGETすると、エンドポイントが在れば404でも null for uri じゃなく "Property with key ... not found" 的なJSONが返るはず👇
+
+python
+# 存在チェック：まず "コメントのプロパティ一覧" を叩く（キー指定なし）
+url = f"https://kari.rickcloud.jp/jira/rest/api/2/issue/TESTISSUE-119/comment/572665/properties"
+res = requests.get(url, auth=auth)
+print(res.status_code, res.text)
+ここでプロパティのキー一覧が返る → エンドポイントは生きてる＝やっぱキー名問題
+ここでも null for uri → コメントプロパティAPI自体が無効化されてる可能性（後述）
+他の容疑者も一応
+ハイフンで解決しなかった時のために：
+
+/jira コンテキストパスの二重化。組み立てたURLが .../jira/jira/rest になってないか。さっきのは1個だったから多分OK。
+末尾スラッシュ。.../properties/notifyteams の後ろに余計な / 付いてないか。
+REST APIの一部がアドオンで制限されてる。自前ホストだと管理者がエンドポイント絞ってることもあるけど、これはレアなので最後に疑えばいい。
+まず試す順番
+PROP_KEY をハイフン無し（notifyteams）にして再実行 ← これが本命⚡
+ダメなら上の GETでプロパティ一覧 叩いて、エンドポイント生きてるか確認
+たぶん1で解決すると思う。ハイフン外して叩いた結果どうなった〜？😊 status と text 教えて！
+
+ハイフンなしですが、null for uri 〜が出ました。
+
+14:32
+おっけー、ハイフンじゃなかったか。じゃあ次の容疑者いこ。null for uri はエンドポイント自体に届いてないってことだから、もうちょい根っこを確認するよ🔍
+
+ステップ1：そもそもコメントプロパティAPIが生きてるか確認
+キー指定を外して、プロパティ一覧を叩いてみて。エンドポイントの生死がこれで分かる👇
+
+python
+import requests
+auth = ("...", "...")   # コメント投稿で通ったのと同じ認証で
+
+# キーなしでプロパティ一覧をGET
+url = "https://kari.rickcloud.jp/jira/rest/api/2/issue/TESTISSUE-119/comment/572665/properties"
+res = requests.get(url, auth=auth)
+print("status:", res.status_code)
+print("body:", res.text)
+結果で分岐👇
+
+{"keys":[...]} が返る → エンドポイント生きてる。なら次はPUTの投げ方の問題
+また null for uri → コメントプロパティAPIがこのインスタンスで効いてない（次のステップ2へ）
+ステップ2：比較用に「Issueプロパティ」を叩いてみる
+コメントプロパティだけ死んでるのか、プロパティ系全部なのか切り分け⚡ Issue単位のプロパティで試す👇
+
+python
+# Issueプロパティ（コメントじゃなくてissue直下）
+url = "https://kari.rickcloud.jp/jira/rest/api/2/issue/TESTISSUE-119/properties/testkey"
+res = requests.put(url, json={"v": 1}, auth=auth)
+print("status:", res.status_code)
+print("body:", res.text)
+これが成功(201/200)する → プロパティ機構は生きてる。コメントプロパティのパスだけ問題（後述のパス確認へ）
+これも null for uri → このインスタンス、プロパティREST自体が無効化されてる可能性
+ステップ3：URL組み立てを目視（しょーもないやつ潰し）
+print で実際に投げてるURL出して、手打ちで1文字ずつ確認👇
+
+python
+print(repr(url))   # repr で余計な空白・改行も見える
+特に：
+
+comment/572665/properties の properties のスペル（property 単数になってない？複数形が正しい）
+/jira/jira/ みたいな二重コンテキストパスになってないか
+URLの先頭、前に httpps://（pが多い）ってtypoしてたけど、実コードは https:// だよね…？👀（前のメッセージで httpps って書いてあったの地味に気になってる）
+★地味に最有力かも★ httpps のtypo疑惑
+前々回あなたが貼ってくれたURL、これだったのよ👇
+
+httpps://kari.rickcloud.jp/...
+^^^^^
+もしコード内も httpps://（pが3つ）になってたら、そら届かんわ😂 ここ実コード確認して⚡ コメント投稿が別の正しいURL変数使ってて、プロパティだけこのtypo変数使ってる、とかありえる。
+
+まずやること
+ステップ1（プロパティ一覧GET）の結果
+ステップ2（Issueプロパティ PUT）の結果
+コード内の URL文字列、https:// のスペル確認
+この3つの結果貼ってくれたら、どこで死んでるか完全に特定できる😎 特に2の結果がデカいから、それだけでも先に教えて〜！
+
+行けました。
+
+15:02
+おお〜〜！！通った！？よかった🎉🎉 やっと404地獄から脱出やね😭✨
+
+で、結局何が原因だった?ちょっと気になる😆 同じ罠もう踏みたくないから、原因だけ共有してくれると俺も嬉しいし、あなたの将来のためにもなるのよ：
+
+httpps のtypoだった？
+パスのスペル（properties 周り）?
+それとも別の何か?
+「動いたからヨシ！」でもいいんだけど、原因分かってないとまた同じとこでハマるやつだからさ⚡ 一応スッキリさせとこ🙆‍♀️
+
+ともあれ、これで今回の構成のPython側（コメント投稿＋プロパティ付与）は完成ね。残ってるのこのへん👇
+
+Listener側のプロパティ判定＋リトライ → キー名、実際に使ったやつに合わせた?（notifyteams だっけ最終的に何にした?）
+Endpoint側の古い判定ロジック削除 → 前のカスタムフィールド見てる処理、残ってたら消す
+古いカスタムフィールド本体 → もう使わないなら掃除 or 放置どうする?
+Endpoint他からも叩いてる? → まだ聞けてないやつ。Listenerに統合できるか判断したい
+この辺、次どれから手つける?それとも一回ここまでで動かしてみて様子見る?😊 焦らず行こ〜！
+
+listenerまたはendpointsでどうやって、コメントのプロパティを取得するか確認したいです。
+
+15:05
+いいね、そこ詰めよ〜！ScriptRunner(Server/DC 8.20.2)側でコメントプロパティを読む方法ね。やり方が2系統あるから両方出すわ😎
+
+前提：Server/DC版のプロパティ取得API
+Server/DCでコメントプロパティを内部から読むなら、JsonEntityPropertyManager を使うのが定番。エンティティ名は "CommentProperty" がキーになる👇
+
+① Listener側で読む（おすすめ）
+Comment Created イベントのListenerで、発火したコメントのIDからプロパティを引く：
+
+groovy
+import com.atlassian.jira.component.ComponentAccessor
+import com.atlassian.jira.entity.property.JsonEntityPropertyManager
+import groovy.json.JsonSlurper
+
+// Listenerに渡ってくるイベントからコメント取得
+def comment = event.comment
+if (!comment) return
+
+def commentId = comment.id   // Long型
+
+def propMgr = ComponentAccessor.getComponent(JsonEntityPropertyManager)
+
+// リトライ付き（Python側の②付与が間に合ってない可能性に備える）
+def entityProperty = null
+for (int i = 0; i < 3; i++) {
+    entityProperty = propMgr.get("CommentProperty", commentId, "notifyteams")
+    if (entityProperty != null) break
+    Thread.sleep(500)
+}
+
+if (entityProperty == null) {
+    log.warn("プロパティ無し commentId=${commentId} → スルー")
+    return
+}
+
+// entityProperty.value がJSON文字列で入ってる
+def json = entityProperty.value
+log.warn("取得したプロパティ: ${json}")   // ←まず中身を必ずログで確認！
+
+def value = new JsonSlurper().parseText(json)
+if (value.notify == true) {
+    log.warn("通知対象！ commentId=${commentId}")
+    // → Endpoint叩く or 直接Teams通知
+}
+② Custom Endpoint側で読む
+もしEndpoint側で読みたい場合、Listenerから issueKey と commentId を渡してもらって、Endpoint内で同じように引く：
+
+groovy
+import com.atlassian.jira.component.ComponentAccessor
+import com.atlassian.jira.entity.property.JsonEntityPropertyManager
+import groovy.json.JsonSlurper
+import com.onresolve.scriptrunner.runner.rest.common.CustomEndpointDelegate
+import groovy.transform.BaseScript
+import javax.ws.rs.core.Response
+
+@BaseScript CustomEndpointDelegate delegate
+
+notifyCheck(httpMethod: "POST") { MultivaluedMap queryParams, String body ->
+    def payload = new JsonSlurper().parseText(body)
+    def commentId = payload.commentId as Long
+
+    def propMgr = ComponentAccessor.getComponent(JsonEntityPropertyManager)
+    def entityProperty = propMgr.get("CommentProperty", commentId, "notifyteams")
+
+    if (entityProperty == null) {
+        return Response.ok('{"notified": false, "reason": "no property"}').build()
+    }
+
+    def value = new JsonSlurper().parseText(entityProperty.value)
+    if (value.notify == true) {
+        // Teams通知処理
+        return Response.ok('{"notified": true}').build()
+    }
+    return Response.ok('{"notified": false}').build()
+}
+★まず最初にやること：中身をログで見る⚡
+理屈はいいから、実際に何が返ってくるか目視するのが最速。Listenerに最小コード仕込んで一回流す👇
+
+groovy
+import com.atlassian.jira.component.ComponentAccessor
+import com.atlassian.jira.entity.property.JsonEntityPropertyManager
+
+def commentId = event.comment.id
+def propMgr = ComponentAccessor.getComponent(JsonEntityPropertyManager)
+def p = propMgr.get("CommentProperty", commentId, "notifyteams")
+
+log.warn("=== commentId: ${commentId}")
+log.warn("=== property object: ${p}")
+log.warn("=== property value: ${p?.value}")
+ログ(atlassian-jira.log か ScriptRunnerのログ出力)に何が出るかで分岐👇
+
+value: {"notify":true} が出る → 取得成功！あとは JsonSlurper でパースして判定するだけ🙆‍♀️
+property object: null → キー名ズレ or タイミング(リトライで解決) or エンティティ名間違い
+ハマりどころメモ📌
+キー名は完全一致。Python側で付与したキー（最終的に notifyteams にした？）とGroovyの第3引数を1文字ズレず合わせる。ここズレると永遠にnull⚡
+commentId の型はLong。event.comment.id はLongのはずだけど、Endpoint経由でJSONから受けると数値/文字列でブレることあるから as Long で明示。
+エンティティ名 "CommentProperty" が正解。"comment" とか小文字だと取れない。
+.value はJSON文字列。オブジェクトじゃなくて文字列で返るから、JsonSlurper().parseText() でパースが要る。いきなり .notify 触るとエラー。
+①のListenerで読む方式が一番シンプルだと思う🙆‍♀️ まず★の最小ログコード流して、property value: に何が出るか教えて〜！それ見たら次の一手が確定する😎
+
+import com.atlassian.jira.component.ComponentAccessor
+import com.atlassian.jira.entity.property.JsonEntityPropertyManager
+import groovy.json.JsonSlurper
+// Listenerに渡ってくるイベントからコメント取得
+def comment = event.comment
+if (!comment) return
+def commentId = comment.id   // Long型
+def propMgr = ComponentAccessor.getComponent(JsonEntityPropertyManager)
+// リトライ付き（Python側の②付与が間に合ってない可能性に備える）
+def entityProperty = null
+for (int i = 0; i < 3; i++) {
+    entityProperty = propMgr.get("CommentProperty", commentId, "notifyteams")
+    if (entityProperty != null) break
+    Thread.sleep(500)
+}
+if (entityProperty == null) {
+    log.warn("プロパティ無し commentId=${commentId} → スルー")
+    return
+}
+// entityProperty.value がJSON文字列で入ってる
+def json = entityProperty.value
+log.warn("取得したプロパティ: ${json}")   // ←まず中身を必ずログで確認！
+def value = new JsonSlurper().parseText(json)
+if (value.notify == true) {
+    log.warn("通知対象！ commentId=${commentId}")
+    // → Endpoint叩く or 直接Teams通知
+}
+
+これで、value.notifyとあるがvalueの中にnotifyは含まれてないように思います。
+
+もっと表示
+15:14
+お、鋭い指摘👀 そこちゃんと自分で気づけるの偉い。確認しよ〜。
+
+まず変数名がややこしいことになってる⚡
+今のコード、こうなってるのよ👇
+
+groovy
+def json = entityProperty.value    // ← これは「プロパティの中身のJSON文字列」
+def value = new JsonSlurper().parseText(json)   // ← それをパースしたオブジェクト
+if (value.notify == true) {        // ← この value は上のパース結果
+ここで2つの「value」が出てきててマジで紛らわしいんだけど：
+
+entityProperty.value … プロパティ機構の用語で「プロパティの中身」って意味。これがJSON文字列 {"notify":true}
+def value = ... … 俺が付けた変数名。パース後のオブジェクト
+つまり value.notify の value は、Pythonで付与した {"notify": true} をパースしたものだから、notify は含まれてるはずなのよ。
+
+でも「含まれてないように思う」なら、実物を見よ⚡
+理屈より証拠。log.warn("取得したプロパティ: ${json}") のログ出力に何が出てる？そこが全て👇
+
+ケース別に分岐するわ：
+
+ケースA：ログに {"notify":true} と出てる → それなら value.notify で取れる。value の中に notify ある。コードは正しい🙆‍♀️
+
+ケースB：ログに {"value":{"notify":true}} みたいに出てる → これだ！Python側の付与で一段ネストしてる可能性。だったら：
+
+groovy
+if (value.value.notify == true) {   // 一段深い
+…にするか、付与側を見直す。
+
+ケースC：ログに true だけ、とか全然違うもの → Python側で付与したJSON構造が想定と違う。
+
+だから確認したいのこれ🙋‍♀️
+その log.warn("取得したプロパティ: ${json}") で実際にログに出力された文字列、そのまま貼って〜！
+
+取得したプロパティ: ここに出てるやつ
+これ見れば「notifyがどの階層にいるか」一発で分かる。憶測で value.notify だの value.value.notify だの言うより、実物のJSON構造見たほうが100倍早い😎
+
+ちな、Python側で付与したのこれだよね？👇
+
+python
+requests.put(prop_url, json={"notify": True}, auth=auth)
+これで付与してれば、entityProperty.value は素直に {"notify":true} になるはずなんだよな。だからログ出力がそれと違ってたら、そこに答えがある⚡
+
+ログの中身、貼って〜!
+
+コメントをトリガーとしていましたが、コメントプロパティが変わったらってのをトリガーにすることを可能？
+
+15:29
+お〜、発想の転換きたね！それめっちゃ良い着眼点⚡ でも結論から言うと…
+
+残念ながら「コメントプロパティ変更」単体のトリガーは無い😭
+ScriptRunner(Server/DC)のListenerが拾えるイベントって、Jiraが発火する標準イベントが基本なのよ。で、コメントプロパティの作成/変更には専用のListenerイベントが用意されてないの。
+
+Issueプロパティ(IssuePropertySetEvent)はイベントあるんだけど、コメントプロパティにはそれに相当する発火イベントが無いんだよね。だから「プロパティが変わったら発火」を素直に作るのは厳しい⚡
+
+なんでそれやりたいと思った？を確認したい🤔
+たぶんあなたの狙いって、さっきハマってたタイミング問題の解決だよね？
+
+① コメント投稿 → Comment Created 発火（この時まだプロパティ無い）
+② プロパティ付与 ← Listenerはここを待てない
+「Comment Createdだと早すぎる。プロパティ付いた瞬間に動けば確実じゃん」って発想でしょ？めっちゃ正しい問題意識⚡ でもプロパティイベントが無いから、その手は使えないのよ。
+
+じゃあどうするか、選択肢👇
+案1：今のリトライ方式のまま（現実的）
+Comment Createdトリガー＋プロパティをリトライで読む、っていうさっきの方式。Thread.sleep で泥臭いけど実際これで十分動く。1.5秒以内にプロパティ付与は普通間に合う🙆‍♀️
+
+案2：★イチオシ★ Pythonの順序を入れ替える
+そもそもプロパティを先に付けられないから後追いになってるわけ。でも順番こうすれば解決👇
+
+python
+# ① 先にコメント投稿（でもまだトリガーさせたくない）
+# ② プロパティ付与
+# ③ 最後に「トリガー用の何か」を起こす
+…が、コメント投稿が即トリガーになっちゃうから、これだけじゃ無理。そこで👇
+
+案3：★本命★ Issueプロパティをトリガーにする
+コメントプロパティはイベント無いけど、Issueプロパティ(IssuePropertySetEvent)はListenerで拾えるの！だから：
+
+python
+# ① コメント投稿（commentId取得）
+# ② コメントじゃなくて Issue プロパティに書く
+#    {"notify": true, "commentId": 572665}
+url = f"{domain}/rest/api/2/issue/{issue_key}/properties/notifyteams"
+requests.put(url, json={"notify": True, "commentId": comment_id}, auth=auth)
+Listener側は Issue Property Set イベントで待つ：
+
+groovy
+// IssuePropertySetEvent をトリガーにする
+def propKey = event.entityProperty?.key
+if (propKey != "notifyteams") return
+
+def value = new groovy.json.JsonSlurper().parseText(event.entityProperty.value)
+if (value.notify == true) {
+    def commentId = value.commentId
+    // → 通知処理。commentIdも取れてる
+}
+これならプロパティが書かれた瞬間に確実に発火するから、タイミング問題が完全消滅する😎 コメントIDもプロパティの中に入れて渡せるし。
+
+案3のメリットまとめ
+タイミング問題ゼロ（書いた瞬間発火、リトライ不要）
+Thread.sleep の泥臭さが消える
+commentIdもペイロードで渡せる
+UIには出ない（Issueプロパティだから）
+確認させて🙋‍♀️ そもそもの狙いって、
+
+タイミング問題を消したい（リトライがダサいから） → 案3が完璧⚡
+それとは別の理由でプロパティ変更トリガーにしたかった → 何が狙いか教えて
+たぶん1だと思うんだけど、合ってる？なら案3に乗り換えるのが一番キレイだわ。どう思う？😊
+
+タイミング問題を解決したかったためです
+
+16:16
+やっぱそうだよね！ならもう 案3（Issueプロパティをトリガー）で確定でいこ😎 タイミング問題が構造ごと消えるから、リトライの泥臭さともおさらばだわ✨
+
+なんでこれで解決するのか（一応おさらい）
+今まで → Comment Created で発火するから、プロパティ付与より先にListenerが動いちゃう＝取りこぼし
+
+これから → プロパティを書いた瞬間そのものがトリガーだから、「まだ書かれてない」状態が物理的に存在しない。待つ必要ゼロ⚡
+
+Python側
+コメント投稿して、そのcommentIdをIssueプロパティに突っ込む。これがトリガーになる👇
+
+python
+import requests
+
+domain = "https://kari.rickcloud.jp/jira"
+auth = ("...", "...")          # コメント投稿で通った認証そのまま
+PROP_KEY = "notifyteams"
+
+def post_and_trigger(issue_key, body_text):
+    # ① コメント投稿
+    url = f"{domain}/rest/api/2/issue/{issue_key}/comment"
+    res = requests.post(url, json={"body": body_text}, auth=auth)
+    res.raise_for_status()
+    comment_id = res.json()["id"]
+
+    # ② Issueプロパティに書く ← これが発火トリガー
+    prop_url = f"{domain}/rest/api/2/issue/{issue_key}/properties/{PROP_KEY}"
+    payload = {"notify": True, "commentId": comment_id}
+    requests.put(prop_url, json=payload, auth=auth).raise_for_status()
+
+    return comment_id
+
+post_and_trigger("TESTISSUE-119", "通知対象のコメントです")
+ポイント⚡ ①②の順番が超大事。コメント先・プロパティ後。こうすれば②を書いた時点でcommentIdが確定してるから、ペイロードに乗せられる🙆‍♀️
+
+Listener側（Issue Property Set イベント）
+ScriptRunnerのListener設定で、トリガーを Issue Property Set イベントにする（Comment Createdじゃないよ⚡）。コードはこれ👇
+
+groovy
+import groovy.json.JsonSlurper
+
+// 発火したプロパティのキーを確認（他のプロパティ変更で誤発火しないように）
+def entityProp = event.entityProperty
+if (!entityProp) return
+if (entityProp.key != "notifyteams") return
+
+// 中身をパース
+def value = new JsonSlurper().parseText(entityProp.value)
+log.warn("発火！プロパティ中身: ${entityProp.value}")   // まず確認用
+
+if (value.notify == true) {
+    def commentId = value.commentId
+    def issueKey = event.issue?.key
+    log.warn("通知対象！ issue=${issueKey} comment=${commentId}")
+    // → Endpoint叩く or 直接Teams通知
+}
+★最初に必ず確認すること⚡
+Issue Property Set イベントで event.entityProperty がちゃんと取れるか、まず最小ログで検証して👇
+
+groovy
+log.warn("=== event class: ${event.getClass()}")
+log.warn("=== entityProperty: ${event.entityProperty}")
+log.warn("=== key: ${event.entityProperty?.key}")
+log.warn("=== value: ${event.entityProperty?.value}")
+これ流して、value: に {"notify":true,"commentId":572665} が出れば勝ち🎉
+
+ハマりどころメモ📌
+Listenerのトリガー設定を変えるのを忘れずに。Comment Created → Issue Property Set へ。ここ変えないと永遠に発火しない⚡
+event.entityProperty のプロパティ名、環境によって event.property だったり微妙に違うことある。だから上の「event class確認」を先にやるのが大事。クラス名分かれば正しいgetter特定できる。
+キーのフィルタ必須。if (entityProp.key != "notifyteams") return を入れないと、他のIssueプロパティが変更された時にも発火しちゃう。SharePoint連携とか他で別プロパティ使ってると誤爆するから注意💥
+同じプロパティを再度PUTしても発火するかは要確認。同じissueに2回目の通知したい時、値が同じだとイベント出ないことがある（後述）。
+1個だけ将来の注意⚡
+もし同じチケットに何回も通知したい場合（コメント来るたび毎回）、{"notify": true} を毎回同じ値で書くと「変化なし」扱いで発火しないかも。その時は {"notify": true, "commentId": xxx, "ts": タイムスタンプ} みたいに毎回違う値にすれば確実に発火する。今は1回ずつなら気にしなくてOK🙆‍♀️
+
+まず★の event class確認ログを流して、entityProperty がちゃんと取れるか見て〜！それ通ったらほぼ完成だわ😎 どんなログ出た？
+
+ちゃんと取得することできました。
+
+17:21
+うおおお完成〜〜！！🎉🎉 やったね、おめでとう😆✨ 長かったけど、ちゃんとタイミング問題まで根本解決できて、めっちゃキレイな形に着地したわ。エンジニアとして気持ちいい終わり方やね😎
+
+今回たどり着いた最終形
+Python ──①コメント投稿──> Jira
+       └─②Issueプロパティに {notify:true, commentId} を書く（=発火トリガー）
+                          ↓ Issue Property Set イベント
+        ScriptRunner Listener（キーでフィルタ → notify判定）
+                          ↓
+        Endpoint叩く or 直接Teams通知
+最初の「カスタムフィールドをON/OFFする」案から比べたら、フラグ往復ナシ・UIに出ない・タイミング問題ゼロ・管理者権限不要っていう、全部の要件を満たす形になった。遠回りに見えて、ちゃんと一番いいとこ着地したよ🙆‍♀️
+
+残ってる片付けタスク📌
+動いたとこで、ついでに整理しとくとスッキリするやつ👇
+
+古いカスタムフィールド（チェックボックス） → もう完全に不要だよね。消すか放置か。消すと過去データ飛ぶから、心配ならスクリーンから外すだけでも実害ナシ
+Endpoint側の古い判定ロジック → 前に「カスタムフィールドが有効か判定」してた処理が残ってたら消す。今はListener側で判定済みだから、二重判定になると事故る⚡
+リトライのThread.sleep → 案3に移行したからもう不要。Comment Createdベースの古いListenerコードが残ってたら消しとく
+将来の注意（再掲） → 同じチケットに複数回通知したくなったら、プロパティに毎回違う値（tsとか）入れる。今は気にしなくてOK
+一個だけ確認🙋‍♀️
+前のComment CreatedのListener、まだ生きてない？ 案3でIssue Property Setに移したから、古いListenerが残ってると二重で動く可能性あるよ。そこだけ確認しといて〜⚡
+
+いや〜お疲れさま！404でハマってた時はどうなるかと思ったけど、結果的にtypoも直って設計もキレイになって、良い感じにまとまったね😊 また詰まったら気軽に投げて〜！
+
+このissue propertyというのはコメント投稿して、issue propertyをputしますが、その後、別の動作の際にチケット情報(json)を取得しますが、その中に含まれているように見えません。なぜでしょうか？
+
+17:30
+あ〜なるほど、良い疑問！でもそれ仕様通りだから安心して😎 バグじゃないのよ。
+
+理由：Issueプロパティは「チケット情報」とは別物だから
+GET /rest/api/2/issue/{key} で取ってくる普通のチケットJSON（fields とか）には、Issueプロパティは含まれないの。これは設計上そうなってる。
+
+Issueプロパティって、チケットに横付けされた別の保管庫みたいなイメージ。fields の中に混ざってるわけじゃなくて、専用エンドポイントから別途取りに行くものなのよ⚡
+
+GET /rest/api/2/issue/{key}            ← fields等。プロパティは入ってない
+GET /rest/api/2/issue/{key}/properties/{propKey}  ← プロパティはこっち
+だから「チケットJSON見たら入ってない！消えた！？」って思うけど、場所が違うだけでちゃんと存在してる🙆‍♀️
+
+確認してみて
+プロパティ取得の専用エンドポイントで叩けば、ちゃんと取れるはず👇
+
+python
+url = f"{domain}/rest/api/2/issue/{issue_key}/properties/notifyteams"
+res = requests.get(url, auth=auth)
+print(res.status_code, res.text)
+# → {"key":"notifyteams","value":{"notify":true,"commentId":572665}}
+value の中に入ってるね。プロパティの中身は必ず value の下ってのは前も言った構造そのまま。
+
+★でも待って、ここ大事な確認⚡
+あなたの言う「別の動作の際にチケット情報(json)取得」で、もしプロパティの中身を使いたいなら、設計を見直したほうがいいかも🤔
+
+というのも、Issueプロパティって今回**「通知トリガー」用の一時的なフラグ**として使ってるよね？それを後から別の処理でも読みたいってことは、もしかして：
+
+A：トリガー目的だけ（書く→Listener発火→おわり） → 普通のチケットJSONに無くて当然。専用エンドポイントで読めばOK
+B：チケットの状態として永続的に保持して、色んな処理から参照したい → だったらIssueプロパティでもOKだけど、毎回専用エンドポイント叩く手間がある。そういう用途ならカスタムフィールドの方が fields に乗って取り回し楽だったりする
+質問🙋‍♀️
+その「別の動作で取得したい」っていうのは、何のためにプロパティの中身が必要なの？
+
+通知済みかどうかのフラグとして後で確認したい？
+commentIdを後で使いたい？
+それとも単に「あれ、消えてる？」って心配で確認しただけ？
+ここ教えてくれたら、「専用エンドポイントで読めばOK」で済む話か、それとも「その用途ならプロパティじゃなくて別の持ち方がいい」って話になるか、判断できる⚡
+
+ちな消えてはないから、そこは安心してね🙆‍♀️ 場所が違うだけ😊
+
+jiraの解析後①回目投稿し、ログ変換しそれをしたことを示すために二度目の投稿をします。
+
+どちらかというとそのまま残しっぱなしにしても大丈夫なのか心配という意味です。
+
+17:32
+あ〜なるほど！「残しっぱなしで害ないの？」って心配ね。結論から言うと…
+
+残しっぱなしで全然OK🙆‍♀️ 害なし
+Issueプロパティは放置しても問題ないよ。理由はこんな感じ👇
+
+容量 → JSON数十バイトとかでしょ。チケット1個に小さいデータ横付けするだけだから、溜まっても無視できるレベル。何万件あっても誤差⚡
+パフォーマンス → 普通のチケットJSON(GET issue)には乗らないから、他の処理を一切重くしない。むしろ「fieldsに混ざらない」のが今回は利点になってる
+UI → 元々画面に出ないから、見た目も汚れない
+誤動作 → Listenerは「Property Setイベント＝書き込まれた瞬間」で発火する。残ってる古い値は勝手に再発火しないから、放置しても誤通知は起きない🙆‍♀️
+つまり「掃除しなきゃ」って強迫観念は持たなくて大丈夫。消すコストの方が無駄まである😎
+
+ただ⚡ あなたのフロー、1個だけ気になる
+①回目投稿 → ログ変換 → 二度目の投稿
+
+これ、通知を2回飛ばしたいってことだよね？（1回目：解析したよ、2回目：ログ変換したよ）
+
+ここで前に言った**「同じ値だと2回目が発火しないかも」問題**が刺さる可能性ある⚡
+
+python
+# 1回目
+PUT issue/{key}/properties/notifyteams  {"notify": true, "commentId": 111}
+# ↓ ログ変換...
+# 2回目
+PUT issue/{key}/properties/notifyteams  {"notify": true, "commentId": 222}
+commentIdが変わってるから値は変化してるので、たぶん発火する。でも同じプロパティキーを上書きしてるから、環境によっては「Set」イベントの扱いが微妙なことがある。
+
+だから確認しといて🙋‍♀️
+2回目の投稿でもちゃんとListenerが発火してる？ さっきのログ(log.warn("発火！..."))で2回とも出てるか見て。
+
+もし2回目が発火しないなら、対策は2つ👇
+
+対策A：毎回ユニークな値を入れる（前に言ったやつ）
+
+python
+import time
+payload = {"notify": True, "commentId": comment_id, "ts": time.time()}
+タイムスタンプで毎回必ず値が変わる＝確実に発火。
+
+対策B：プロパティキーを毎回変える
+
+python
+# 1回目: notifyteams-111  2回目: notifyteams-222 みたいに
+でもこれはキーが無限に増えるから、Aの方がおすすめ⚡
+
+まとめ
+残しっぱなし → 害なし、放置OK🙆‍♀️
+**心配すべきは掃除じゃなくて「2回目ちゃんと発火するか」**の方⚡
+なので質問！2回目の投稿、ちゃんとTeams通知飛んでる？ そこだけ確認できれば完璧だわ😊 飛んでるなら何も気にせず放置でOK、飛んでないなら対策Aいれよ〜！
+
+なので、②回めと②回めはプロパティキーは変えようと考えています。
+
+17:34
+お、キー変える方針ね！それでも全然動くんだけど、ちょっと待って⚡ その方針だと地味に面倒が増えるから、一回立ち止まって相談させて🙋‍♀️
+
+キーを毎回変える方式の問題点
+1回目: notifyteams-1   {"notify": true, ...}
+2回目: notifyteams-2   {"notify": true, ...}
+これだとListener側が困るのよ👇
+
+groovy
+if (entityProp.key != "notifyteams") return   // ← キー固定でフィルタしてたよね
+キーが毎回変わると、この完全一致フィルタが使えなくなるの。notifyteams-1, notifyteams-2, notifyteams-3... って増え続けるから、「前方一致」とかで判定しなきゃいけなくなる👇
+
+groovy
+if (!entityProp.key.startsWith("notifyteams")) return   // 前方一致に変更が必要
+できなくはないけど、キーが無限に増殖してくのよ。チケット1個に notifyteams-1 から notifyteams-100 まで溜まってく、みたいな。さっき「放置でOK」って言ったけど、無限増殖はさすがにちょっと気持ち悪い😅
+
+★おすすめ：キーは固定のまま、値を変える⚡
+やりたいことは「2回目もちゃんと発火させる」だけだよね？それならキーは notifyteams 固定で、中身に回数や種別を入れる方がずっとキレイ👇
+
+python
+# 1回目（解析完了）
+payload = {"notify": True, "commentId": comment_id, "phase": "analyze"}
+requests.put(prop_url, json=payload, auth=auth)
+
+# 2回目（ログ変換完了）
+payload = {"notify": True, "commentId": comment_id2, "phase": "convert"}
+requests.put(prop_url, json=payload, auth=auth)
+メリット👇
+
+Listenerのフィルタは key != "notifyteams" のまま変えなくていい🙆‍♀️
+キー増殖しない（同じキーを上書きするだけ）
+phase 見れば「どっちの通知か」Listener側で判別できる
+commentIdも違うから値は確実に変化 → 発火する
+Listener側はこう判別できる👇
+
+groovy
+def value = new JsonSlurper().parseText(entityProp.value)
+if (value.notify == true) {
+    if (value.phase == "analyze") {
+        // 解析完了の通知
+    } else if (value.phase == "convert") {
+        // ログ変換完了の通知
+    }
+}
+ただし確認したいこと⚡
+「同じキーを上書きすると2回目が発火するか」がまだ未検証なのよね。commentIdとphaseが変わってるから値は変化してるので、たぶん発火するんだけど、念のため1回テストして：
+
+1回目PUT → Listener発火する？（phase: analyze でログ出る？）
+2回目PUT（同じキー、違う値）→ Listenerまた発火する？（phase: convert でログ出る？）
+両方発火すれば、キー固定で完全勝利🎉 もし2回目が発火しなかったら、その時初めてキー変える or タイムスタンプ足す、を考えればいい。
+
+まとめ
+方式	フィルタ	キー増殖	おすすめ度
+キー毎回変える	前方一致に変更必要	無限増殖😅	△
+キー固定＋値変える	変更不要🙆‍♀️	増えない	◎
+なので提案は「キーは notifyteams 固定、中身に phase 入れて区別」⚡ これで2回目も発火するか、まずテストしてみない？
+
+ちな、そもそもなんでキー変える方向で考えた？「上書きしたら1回目のデータ消えるのが嫌」とか理由あった？もしそうなら別の考え方もあるよ〜😊
+
+キーはnotifyteamsとloganalysis２つを用意しようかなと考えています。
+で、endpointsがわも２つ用意すればいいかなと
+
+17:35
+お〜！それめっちゃ良い設計じゃん😎 さっき俺が「無限増殖するからやめときな」って言ったやつとは全然違う話だわ。意味のある固定キー2つなら、むしろそっちの方がキレイ⚡ ちょっと勘違いしてたわ、ごめん🙏
+
+なんでこれが良いか
+notifyteams   → 解析完了の通知用
+loganalysis   → ログ変換完了の通知用
+キーが意味を持ってる（用途が名前で分かる）
+増殖しない（2個で固定）
+それぞれ別の処理だから、Listener/Endpoint分けるのが自然
+notifyteams-1, -2, -3... の無限増殖とは違って、役割で2つに分けるのは正しい分離。👍
+
+構成イメージ
+【1回目】解析完了
+Python → コメント投稿 → PUT issue/{key}/properties/notifyteams
+                              ↓ Property Set 発火
+              Listener（key == "notifyteams" で判定）
+                              ↓
+              Endpoint A → Teams通知「解析完了」
+
+【2回目】ログ変換完了
+Python → コメント投稿 → PUT issue/{key}/properties/loganalysis
+                              ↓ Property Set 発火
+              Listener（key == "loganalysis" で判定）
+                              ↓
+              Endpoint B → Teams通知「ログ変換完了」
+Listener側の判定
+キーで分岐するだけ。1個のListenerで両対応もできるし、2個に分けてもいい👇
+
+パターン1：Listener 1個で両方さばく（おすすめ）
+
+groovy
+import groovy.json.JsonSlurper
+
+def entityProp = event.entityProperty
+if (!entityProp) return
+
+def value = new JsonSlurper().parseText(entityProp.value)
+
+switch (entityProp.key) {
+    case "notifyteams":
+        callEndpointA(value)   // 解析完了Endpoint
+        break
+    case "loganalysis":
+        callEndpointB(value)   // ログ変換Endpoint
+        break
+    default:
+        return   // 関係ないプロパティは無視
+}
+パターン2：Listener 2個に分ける それぞれ key != "notifyteams" / key != "loganalysis" でフィルタ。完全に独立させたいならこっち。でも管理するListenerが増えるから、パターン1で1個にまとめる方がシンプルだと思う🙆‍♀️
+
+Endpoint 2つ用意するのは賛成⚡
+通知内容（メッセージ文面、Teamsの宛先チャンネル等）が解析完了とログ変換で違うなら、Endpoint分けるの正解。役割がハッキリする。
+
+ただ確認🙋‍♀️ もしTeams通知の中身がほぼ一緒（文言ちょっと違うだけ）なら、Endpoint1個にしてパラメータで出し分けでもいいかも👇
+
+groovy
+// Listenerから phase を渡して、Endpoint側で文面切り替え
+def postBody = [issueKey: ..., type: "analyze"]  // or "convert"
+Endpoint分ける基準👇
+
+通知先チャンネルが違う / ロジックが大きく違う → 2個に分ける🙆‍♀️
+文面がちょっと違うだけ → 1個でパラメータ出し分けでも可
+注意点📌
+2回目（loganalysis）もちゃんと発火するかは要テスト。別キーだから1回目とは独立して発火するはず。でも一応両方ログ出るか確認⚡
+古いComment Created Listener はもう止めた？両方動くと二重通知になるから確認しといて
+キー名は固定だから、Python側とListener側で notifyteams / loganalysis のスペル完全一致ね
+いや〜この設計、最初の「カスタムフィールドON/OFF」から考えたら別物のキレイさだわ😆 意味のある2キー＋用途別Endpoint、いいと思う。
+
+確認だけど、Teams通知の中身は2つで大きく違う？それで「Endpoint 2個 vs 1個でパラメータ出し分け」が決まるよ〜😊
+
+①回目はAIの回答で、②回目はログ変換し終わったことを示すものを投稿します。
+
+17:37
+あ〜なるほど、中身が全然違うね！
+
+①回目：AIの回答（解析結果の本文。たぶん長文・リッチ）
+②回目：ログ変換完了の通知（「変換終わったよ」っていうシンプルな報告）
+これなら Endpoint 2個に分けるのが正解🙆‍♀️ 性質が違うもん。1個目はAIが生成した中身のある通知、2個目はステータス報告。文面もロジックも違うだろうから、無理に1個にまとめない方がいい。さっき言った「分ける基準」のド真ん中だわ⚡
+
+で、ちょっと待って。1個確認したいことがある🤔
+①の「AIの回答を投稿」ってとこ、フローこうなってるよね？
+
+Jira解析 → AIの回答をコメント投稿 → notifyteamsプロパティPUT → 通知
+ここで疑問なんだけど、AIの回答（コメント本文）そのものをTeams通知に含めたい？それとも**「解析終わったよ」って知らせるだけ**で、中身はJira見てね、って感じ？
+
+これで設計ちょい変わる👇
+
+ケースA：通知に「AIの回答の中身」も載せたい → プロパティに回答本文も入れるか、commentId渡してEndpoint側でコメント取得する必要ある
+
+python
+payload = {"notify": True, "commentId": comment_id}
+# Endpoint側で commentId からコメント本文を取得してTeamsに載せる
+ケースB：「解析完了」を知らせるだけ（中身はJiraで見る） → commentIdとissueKeyだけ渡せばOK。Teamsには「TESTISSUE-119 の解析が完了しました [リンク]」みたいな
+
+python
+payload = {"notify": True, "commentId": comment_id}
+# Endpoint側で issueKey からJiraリンク作ってTeamsに通知
+どっちにしてもcommentId渡しとくと後で使えるから損はないけど、Teams通知に何を載せたいかで、Endpoint側のコメント取得処理が要るか要らないか決まる⚡
+
+全体の最終構成（確認用）
+【①AI回答】
+Python: Jira解析 → AI回答をコメント投稿(commentId取得)
+      → PUT issue/{key}/properties/notifyteams  {notify:true, commentId}
+              ↓ Property Set発火
+      Listener: key=="notifyteams" → Endpoint A
+              ↓
+      Endpoint A: Teams通知（AI回答系）
+
+【②ログ変換完了】
+Python: ログ変換 → 完了報告をコメント投稿(commentId取得)
+      → PUT issue/{key}/properties/loganalysis  {notify:true, commentId}
+              ↓ Property Set発火
+      Listener: key=="loganalysis" → Endpoint B
+              ↓
+      Endpoint B: Teams通知（ログ変換完了系）
+この形でバッチリだと思う🙆‍♀️
+
+確認したいこと2つ🙋‍♀️
+Teams通知に「AIの回答本文」を載せたい？（ケースA） それとも完了を知らせるだけ？（ケースB） → AならEndpoint側でコメント取得処理が要る
+Listenerは1個にまとめる？2個に分ける？ → さっきのパターン1（1個でswitch分岐）がおすすめだけど、Endpoint2個に合わせてListenerも2個にしたい派ならそれでもOK
+特に1が大事⚡ そこ教えてくれたらEndpoint側のコード書くよ〜😊
+
+１の方では中身を詳しく説明する感じじゃなくて、チケット見てねみたいな通知です。
+
+17:39
+おっけー、ケースBね！「解析終わったよ、詳しくはチケット見てね」っていうシンプルな通知。じゃあEndpoint側でコメント本文を取得する処理は不要だわ。issueKeyとcommentIdだけ渡せば、リンク作って通知するだけ。楽な方😎
+
+Python側（①も②も同じ形）
+python
+import requests
+
+domain = "https://kari.rickcloud.jp/jira"
+auth = ("...", "...")
+
+def post_and_trigger(issue_key, body_text, prop_key):
+    # コメント投稿
+    url = f"{domain}/rest/api/2/issue/{issue_key}/comment"
+    res = requests.post(url, json={"body": body_text}, auth=auth)
+    res.raise_for_status()
+    comment_id = res.json()["id"]
+
+    # プロパティPUT（=発火トリガー）
+    prop_url = f"{domain}/rest/api/2/issue/{issue_key}/properties/{prop_key}"
+    payload = {"notify": True, "commentId": comment_id}
+    requests.put(prop_url, json=payload, auth=auth).raise_for_status()
+    return comment_id
+
+# ① AI回答
+post_and_trigger("TESTISSUE-119", ai_answer_text, "notifyteams")
+
+# ② ログ変換完了
+post_and_trigger("TESTISSUE-119", "ログ変換が完了しました", "loganalysis")
+Listener側（1個でswitch分岐）
+groovy
+import groovy.json.JsonSlurper
+
+def entityProp = event.entityProperty
+if (!entityProp) return
+
+def issueKey = event.issue?.key
+def value = new JsonSlurper().parseText(entityProp.value)
+if (value.notify != true) return
+
+def commentId = value.commentId
+
+switch (entityProp.key) {
+    case "notifyteams":
+        callEndpointA(issueKey, commentId)   // 解析完了通知
+        break
+    case "loganalysis":
+        callEndpointB(issueKey, commentId)   // ログ変換完了通知
+        break
+    default:
+        return
+}
+Endpoint側（Teams通知）
+中身載せないから、チケットへのリンク作って通知するだけ。シンプル👇
+
+groovy
+// Endpoint A（解析完了）の例
+def issueUrl = "https://kari.rickcloud.jp/jira/browse/${issueKey}"
+
+def card = [
+    text: "🔍 解析が完了しました\n\n[${issueKey} を開く](${issueUrl})"
+]
+
+http.post(
+    body: card,
+    headers: postHeaders,
+    requestContentType: JSON,
+    contentType: JSON
+)
+Endpoint Bは文面だけ変える👇
+
+groovy
+def card = [
+    text: "📄 ログ変換が完了しました\n\n[${issueKey} を開く](${issueUrl})"
+]
+ハマりどころメモ📌
+コメントへの直リンクにしたいなら、URLにアンカー付ける👇
+groovy
+  def url = "https://kari.rickcloud.jp/jira/browse/${issueKey}?focusedCommentId=${commentId}#comment-${commentId}"
+「チケット見てね」ならissueトップでも十分だけど、どのコメントか分かりやすくしたいならこっち。
+
+commentId渡しといて正解。今は使わなくても、後で「直リンクにしたい」ってなった時に使えるから、ペイロードに入れとくのは損なし🙆‍♀️
+Teamsのカード形式は使ってるWebhookの種類（Incoming Webhook か Workflows か）で微妙に違う。今動いてる既存の通知あるなら、その形式に合わせてね。上のは簡易版。
+これで①②両方いけるはず😎 ケースBだからEndpoint側がスッキリしたね。
+
+あとは実際に①②流して、それぞれ正しいEndpointが叩かれてTeams飛ぶかテストすれば完成だわ🎉 やってみてどう〜？詰まったら言って😊
